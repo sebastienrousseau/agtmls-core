@@ -261,12 +261,10 @@ fn check_policy_prose(skill_md: &str, policy: &serde_json::Value) -> Vec<Finding
 /// is declared at all, and whether the frontmatter grants more than the policy
 /// admits, are not properties of any single document.
 #[must_use]
-pub fn audit_skill(rules: &RuleSet, files: &SkillFiles) -> Vec<Finding> {
+pub fn audit_skill(files: &SkillFiles) -> Vec<Finding> {
+    // check_invisible is per-document and now lives in Analyzer::audit_str, so
+    // every caller gets it whether or not it is auditing a whole skill.
     let mut findings = Vec::new();
-    for (name, content) in files {
-        findings.extend(check_invisible(rules, name, content));
-    }
-
     let Some(skill_md) = files.get("SKILL.md") else {
         return findings;
     };
