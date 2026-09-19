@@ -1,5 +1,3 @@
 target/
 *.profraw
 .DS_Store
-crates/agtmls-wasm/pkg/
-crates/agtmls-wasm/pkg-node/
