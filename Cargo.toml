@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Sebastien Rousseau
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[workspace]
+resolver = "3"
+members = ["crates/agtmls-core", "crates/agtmls-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+# Floor chosen for edition 2024 and resolver 3. Raised only with a CHANGELOG
+# entry; shared-msrv-core.yml proves the floor still builds.
+rust-version = "1.86.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sebastienrousseau/agtmls-core"
+homepage = "https://github.com/sebastienrousseau/agtmls-core"
+authors = ["Sebastien Rousseau <sebastian.rousseau@gmail.com>"]
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.11"
+sha2 = "0.10"
+toml = "0.9"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }

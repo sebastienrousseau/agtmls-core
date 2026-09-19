@@ -1,0 +1,3 @@
+# Intentionally minimal: pins rustfmt to its DEFAULTS, which is exactly what
+# CI enforces. Its presence stops `cargo fmt` walking up to a developer's
+# global ~/.rustfmt.toml and formatting divergently from the gate.

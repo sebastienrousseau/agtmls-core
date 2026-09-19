@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Sebastien Rousseau
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "agtmls-cli"
+description = "Command-line interface to the AgtMLS engine: skill digests and static security analysis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "agtmls-rs"
+path = "src/main.rs"
+
+[dependencies]
+agtmls-core = { path = "../agtmls-core", version = "=0.0.1" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+{
+  "implementation": "agtmls-core",
+  "version": "0.0.1",
+  "spec_version": "0.1.0",
+  "claimed_level": "L4",
+  "level_rationale": "L4 (Registry): all 14 digest vectors, all 31 registry skill digests, all 16 security corpus cases and all 31 registry skill rule sets identical to the Python implementation; plus lockfile verification agreeing on a deliberately tampered install, including the exit-code taxonomy. Verified by agtmls-spec/conformance/run.py, which compares the two implementations to each other rather than only to expected values.",
+  "not_implemented": {
+    "install": "agtmls-core verifies an install but does not create one. Installation remains the Python implementation's responsibility; the lockfile is the interop boundary."
+  }
+}
