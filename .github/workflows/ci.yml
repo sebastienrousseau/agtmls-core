@@ -95,8 +95,62 @@ jobs:
         run: cargo test --workspace --all-features
 
   supply-chain:
-    name: cargo-deny
+    name: licences, bans and sources
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2
+      # `advisories` is deliberately absent, and it is the check that matters
+      # most, so this needs justifying: as of 2026-09 the RustSec database
+      # ships RUSTSEC-2026-0180.md with malformed TOML, and cargo-deny 2.1.1 --
+      # the latest -- fails to load the whole database rather than skipping the
+      # one entry. Nothing in this repository can fix that.
+      #
+      # The vulnerability check is not dropped, it moves: the osv-scanner job
+      # below reads the same advisories from OSV, which does not depend on
+      # parsing RustSec's markdown. Restore `advisories` here, and delete this
+      # comment, once the upstream entry is fixed.
+      - uses: EmbarkStudios/cargo-deny-action@30f817c6f72275c6d54dc744fbca09ebc958599f # v2.1.1
+        with:
+          command: check licenses bans sources
+
+  vulnerabilities:
+    name: known vulnerabilities (OSV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+        with:
+          scan-args: |-
+            --lockfile=Cargo.lock
+
+  signatures:
+    name: commits are signed
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify
+        run: |
+          git config gpg.ssh.allowedSignersFile KEYS.asc
+          unsigned=0
+          # --no-merges: on a pull_request event HEAD is the synthetic merge
+          # commit GitHub creates, which no contributor signs.
+          for commit in $(git rev-list --no-merges origin/${{ github.base_ref }}..HEAD); do
+            author=$(git log -1 --format='%an' "$commit")
+            # A bot's commits are signed by GitHub's key, not by a maintainer
+            # key in KEYS.asc, so they verify as E here. That is a different
+            # trust path -- authenticated by the forge, not by us -- and this
+            # gate governs contributor commits. Excluding them is deliberate;
+            # a human commit pushed to a bot's branch is still checked.
+            case "$author" in
+              *"[bot]") echo "skipping bot commit $commit ($author)"; continue ;;
+            esac
+            status=$(git log -1 --format='%G?' "$commit")
+            if [ "$status" != "G" ] && [ "$status" != "U" ]; then
+              echo "::error::unsigned or unverifiable commit $commit (%G? = $status)"
+              unsigned=1
+            fi
+          done
+          test "$unsigned" -eq 0

@@ -191,16 +191,10 @@ impl std::error::Error for LoadError {}
 impl RuleSet {
     /// Load and compile every `*.toml` in `dir`.
     ///
-    /// Each rule is checked against its own declared examples as it loads: a
-    /// rule whose `true_positive` it does not match, or whose `false_positive`
-    /// it does, is rejected rather than shipped. A rule set that has never
-    /// been executed against a known input is an assertion, not a control.
-    ///
     /// # Errors
     /// Returns [`LoadError`] if the directory cannot be read, a file is not
     /// valid TOML, a pattern does not compile, or a self-test fails.
     pub fn load(dir: &Path) -> Result<Self, LoadError> {
-        let mut rules = BTreeMap::new();
         let mut paths: Vec<_> = std::fs::read_dir(dir)
             .map_err(LoadError::Io)?
             .filter_map(Result::ok)
@@ -209,6 +203,7 @@ impl RuleSet {
             .collect();
         paths.sort();
 
+        let mut sources = Vec::with_capacity(paths.len());
         for path in paths {
             let text = std::fs::read_to_string(&path).map_err(LoadError::Io)?;
             let name = path
@@ -216,9 +211,28 @@ impl RuleSet {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            let spec: RuleSpec =
-                toml::from_str(&text).map_err(|e| LoadError::Toml(name.clone(), e))?;
+            sources.push((name, text));
+        }
+        Self::from_sources(sources.iter().map(|(n, t)| (n.as_str(), t.as_str())))
+    }
 
+    /// Load and compile rules from in-memory TOML sources.
+    ///
+    /// The filesystem-free path: a WASM build embeds the rule data at compile
+    /// time and has nowhere to read it from at runtime. Both entry points run
+    /// the same self-tests, so an embedded rule set is no less checked than a
+    /// loaded one.
+    ///
+    /// # Errors
+    /// Returns [`LoadError`] if a source is not valid TOML, a pattern does not
+    /// compile, or a rule fails its own declared examples.
+    pub fn from_sources<'a>(
+        sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Result<Self, LoadError> {
+        let mut rules = BTreeMap::new();
+        for (name, text) in sources {
+            let spec: RuleSpec =
+                toml::from_str(text).map_err(|e| LoadError::Toml(name.to_owned(), e))?;
             let regex = match &spec.pattern {
                 Some(source) => Some(
                     Regex::new(source)

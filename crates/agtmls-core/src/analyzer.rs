@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::rules::{RuleSet, Scope, Severity, normalise};
+use crate::skill::check_invisible;
 
 /// Files an agent could read or a user could execute.
 ///
@@ -64,8 +65,21 @@ impl Analyzer {
 
     /// Analyse in-memory content. The entry point a WASM build uses, since it
     /// never needs a filesystem.
+    ///
+    /// Runs the pattern rules *and* the per-document structural ones. Invisible
+    /// code points are a property of a document, so putting that check only in
+    /// [`crate::skill::audit_skill`] left every single-file caller reporting
+    /// clean on a file full of smuggled instructions.
     #[must_use]
     pub fn audit_str(&self, name: &str, content: &str) -> Vec<Finding> {
+        let mut findings = check_invisible(&self.rules, name, content);
+        findings.extend(self.audit_patterns(name, content));
+        findings.sort_by(|a, b| (a.line, &a.rule).cmp(&(b.line, &b.rule)));
+        findings.dedup_by(|a, b| a.line == b.line && a.rule == b.rule && a.message == b.message);
+        findings
+    }
+
+    fn audit_patterns(&self, name: &str, content: &str) -> Vec<Finding> {
         let flat = normalise(content);
         // The line map costs a pass over every character, so it is built only
         // once something has actually matched. Almost every file is clean.
@@ -95,8 +109,6 @@ impl Analyzer {
                 });
             }
         }
-        findings.sort_by(|a, b| (a.line, &a.rule).cmp(&(b.line, &b.rule)));
-        findings.dedup_by(|a, b| a.line == b.line && a.rule == b.rule);
         findings
     }
 

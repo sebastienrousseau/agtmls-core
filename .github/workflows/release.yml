@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: 2026 Sebastien Rousseau
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: release
+
+on:
+  push:
+    tags: ["v0.0.*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and validate without publishing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # Sigstore-signs the SBOM against this workflow's identity.
+  attestations: write
+  id-token: write
+
+jobs:
+  verify:
+    name: verify before publishing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sebastienrousseau/agtmls-spec
+          path: .spec
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sebastienrousseau/agtmls
+          path: .agtmls
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+
+      - name: Tag must match the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          WS=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          test "v${WS}" = "${GITHUB_REF_NAME}" || {
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml ${WS}"
+            exit 1
+          }
+
+      - name: Software bill of materials
+        run: |
+          cargo install --locked cargo-cyclonedx
+          cargo cyclonedx --format json --all
+      - name: Attest the build
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "**/*.cdx.json"
+
+      # A release that has not been replayed against the corpus is a release
+      # whose conformance claim is unverified, which is the defect the
+      # specification exists to prevent.
+      - name: Conformance, and agreement with the Python implementation
+        env:
+          AGTMLS_SPEC: ${{ github.workspace }}/.spec
+        run: |
+          cargo test --workspace --all-features
+          cargo build --release -p agtmls-cli
+          .spec/conformance/run.py --python .agtmls --rust target/release/agtmls-rs
+
+      - name: The claimed conformance level must be the computed one
+        run: |
+          CLAIMED=$(python3 -c 'import json;print(json.load(open("conformance.json"))["claimed_level"])')
+          test "$CLAIMED" = "L4" || {
+            echo "::error::conformance.json claims $CLAIMED; the runner verifies L4"
+            exit 1
+          }
+          echo "conformance level $CLAIMED verified"
+
+  crates-io:
+    name: Publish to crates.io
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      # Mints the OIDC identity token crates.io exchanges for a short-lived
+      # publish token. Without it the auth step fails.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+
+      # Trusted publishing: swaps this job's GitHub OIDC identity for a
+      # temporary crates.io token, revoked when the job ends. Needs a trusted
+      # publisher registered on crates.io for each crate
+      # (repo + release.yml + environment crates-io).
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      # Order matters: agtmls-cli depends on agtmls-core by exact version, so
+      # the core must be on the index before the CLI can resolve it.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -uxo pipefail
+          publish() {
+            out=$(cargo publish -p "$1" --all-features --locked 2>&1) && rc=0 || rc=$?
+            echo "$out"
+            if [ "$rc" -ne 0 ]; then
+              echo "$out" | grep -qE "already (exists|uploaded)" \
+                && { echo "$1: version already on crates.io — tolerating"; return 0; }
+              return "$rc"
+            fi
+          }
+          publish agtmls-core
+          # The index needs a moment before a dependent crate can resolve it.
+          sleep 30
+          publish agtmls-cli

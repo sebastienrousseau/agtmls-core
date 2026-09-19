@@ -163,12 +163,12 @@ fn read_skill(dir: &Path) -> Option<skill::SkillFiles> {
 }
 
 /// Every skill directory at or below `root`, structurally analysed.
-fn audit_skill_dirs(root: &Path, analyzer: &Analyzer) -> Vec<agtmls_core::Finding> {
+fn audit_skill_dirs(root: &Path) -> Vec<agtmls_core::Finding> {
     let mut findings = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if let Some(files) = read_skill(&dir) {
-            findings.extend(skill::audit_skill(analyzer.rules(), &files));
+            findings.extend(skill::audit_skill(&files));
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -207,7 +207,7 @@ fn audit(path: &Path, rules_dir: Option<&Path>, json: bool) -> ExitCode {
         // pattern rules here left the binary silently weaker than the library
         // it is built on -- caught by the cross-implementation differential,
         // not by this crate's own tests.
-        findings.extend(audit_skill_dirs(path, &analyzer));
+        findings.extend(audit_skill_dirs(path));
         let mut stack = vec![path.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {

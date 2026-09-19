@@ -104,6 +104,15 @@ fn walk(root: &Path, dir: &Path, out: &mut Manifest) -> io::Result<()> {
     Ok(())
 }
 
+/// Lowercase hex SHA-256 of `bytes`.
+///
+/// Exposed so a caller without a filesystem -- the WASM build -- can build a
+/// manifest from content it was handed rather than from a directory.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes
