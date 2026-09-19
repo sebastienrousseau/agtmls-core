@@ -31,6 +31,10 @@ jobs:
         with:
           repository: sebastienrousseau/agtmls
           path: .agtmls
+          # TEMPORARY: agtmls' work lives on feat/v0.0.6 and main predates it,
+          # so a default checkout has neither scripts/_lib nor the integrity
+          # digests. Drop this ref once feat/v0.0.6 is merged.
+          ref: feat/v0.0.6
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: stable
