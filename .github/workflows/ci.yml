@@ -126,3 +126,26 @@ jobs:
         with:
           scan-args: |-
             --lockfile=Cargo.lock
+
+  signatures:
+    name: commits are signed
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify
+        run: |
+          git config gpg.ssh.allowedSignersFile KEYS.asc
+          unsigned=0
+          # --no-merges: on a pull_request event HEAD is the synthetic merge
+          # commit GitHub creates, which no contributor signs.
+          for commit in $(git rev-list --no-merges origin/${{ github.base_ref }}..HEAD); do
+            status=$(git log -1 --format='%G?' "$commit")
+            if [ "$status" != "G" ] && [ "$status" != "U" ]; then
+              echo "::error::unsigned or unverifiable commit $commit (%G? = $status)"
+              unsigned=1
+            fi
+          done
+          test "$unsigned" -eq 0

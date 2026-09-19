@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+title: agtmls-core
+message: "If you use this software, please cite it."
+type: software
+authors:
+  - given-names: Sebastien
+    family-names: Rousseau
+    email: sebastian.rousseau@gmail.com
+repository-code: "https://github.com/sebastienrousseau/agtmls-core"
+abstract: "Rust engine for the AgtMLS agent skills registry."
+license: "Apache-2.0 OR MIT"
+version: 0.0.1
