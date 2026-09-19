@@ -1,6 +1,28 @@
 # SPDX-FileCopyrightText: 2026 Sebastien Rousseau
 # SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# osv-scanner configuration.
+#
+# Consumed by:
+#   - the `known vulnerabilities (OSV)` job in .github/workflows/ci.yml
+#   - OpenSSF Scorecard's Vulnerabilities check
+#   - a local `osv-scanner --lockfile=Cargo.lock .` run
+#
+# When to add an ignore entry here:
+#   - the advisory is genuinely not exposed by what this crate ships
+#     (build-time-only dependency, an opt-in feature nothing enables);
+#   - AND the same advisory is ignored in deny.toml under
+#     [advisories.ignore] with a matching rationale.
+#
+# The two are kept in sync deliberately, so one grep for a RUSTSEC id
+# finds every place the risk was accepted. Remove an entry from one and
+# remove it from the other, or Scorecard re-opens the alert.
+#
+# Nothing is currently ignored. The dependency list is short on purpose:
+# this crate parses untrusted input, and every crate added is attack
+# surface inherited.
 
-PackageSources:
-  - type: lockfile
-    path: Cargo.lock
+# [[IgnoredVulns]]
+# id = "RUSTSEC-0000-0000"
+# reason = "why this does not reach anything we ship"
+# ignoreUntil = "2027-06-01"   # optional; makes the ignore expire
