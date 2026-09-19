@@ -17,6 +17,19 @@ use std::collections::BTreeMap;
 use agtmls_core::{Analyzer, RuleSet, digest, skill};
 use serde_json::Value;
 
+fn walkdir_count(root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| {
+            let path = e.path();
+            if path.is_dir() { walkdir_count(&path) } else { 1 }
+        })
+        .sum()
+}
+
 fn spec_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("AGTMLS_SPEC") {
         return PathBuf::from(dir);
@@ -39,6 +52,7 @@ fn spec_dir() -> PathBuf {
 
 fn materialise(case: &Value, root: &Path) {
     std::fs::create_dir_all(root).expect("create case root");
+    let mut written = 0usize;
     if let Some(files) = case["files"].as_object() {
         for (relative, content) in files {
             let path = root.join(relative);
@@ -46,7 +60,19 @@ fn materialise(case: &Value, root: &Path) {
                 std::fs::create_dir_all(parent).expect("create parent");
             }
             std::fs::write(&path, content.as_str().unwrap_or_default()).expect("write file");
+            written += 1;
         }
+        // A case-insensitive filesystem merges names differing only by case,
+        // so a vector generated on macOS can describe fewer files than the
+        // same case produces on Linux. That surfaced as an inexplicable digest
+        // mismatch; say what actually happened instead.
+        let on_disk = walkdir_count(root);
+        assert_eq!(
+            on_disk, written,
+            "{}: declared {written} files but {on_disk} exist on disk. The filesystem \
+             merged names that differ only by case; this vector is not portable.",
+            case["name"].as_str().unwrap_or("?")
+        );
     }
     for dir in case["directories"].as_array().into_iter().flatten() {
         std::fs::create_dir_all(root.join(dir.as_str().unwrap_or_default())).expect("create dir");
