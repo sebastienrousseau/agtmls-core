@@ -67,3 +67,12 @@ visible from inside either one:
   structural ones, so it was silently weaker than the library it is built on.
   The library's own tests passed throughout; only the cross-implementation
   differential caught it.
+
+`AGT-CAP-001` could not fire on a real skill. The Agent Skills spec writes
+`allowed-tools` space-separated (`allowed-tools: "Read Glob Bash"`), and
+`frontmatter_tools` split on commas only, so that value came back as one
+tool named `Read Glob Bash` that granted nothing. It now tokenises exactly
+as the Python reference does: whitespace and commas separate tools, quotes
+and `[...]` flow-list brackets are ignored, and a parenthesised specifier
+such as `Bash(git log:*)` stays part of its token and still counts as the
+tool before the `(`.
