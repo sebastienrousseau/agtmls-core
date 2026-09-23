@@ -13,6 +13,9 @@
 //! point set there rather than here — neither implementation owns the list.
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
+
+use regex::Regex;
 
 use crate::analyzer::Finding;
 use crate::rules::{RuleSet, Severity};
@@ -81,7 +84,24 @@ pub fn check_invisible(rules: &RuleSet, file: &str, content: &str) -> Vec<Findin
     findings
 }
 
+/// One granted tool: a name, optionally followed by a parenthesised specifier
+/// that may itself contain spaces, as in `Bash(git log:*)`.
+///
+/// Whitespace, commas, quotes and YAML flow-list brackets separate tools and
+/// are never part of one. `\x1C-\x1F` is listed because Python's `\s`, which
+/// the reference implementation uses, counts them as whitespace and Rust's
+/// does not; without it the two would tokenise those bytes differently.
+static TOOL_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"[^\s\x1C-\x1F,()'"\[\]]+(?:\([^)]*\))?"#).expect("TOOL_TOKEN compiles")
+});
+
 /// Tools granted by `SKILL.md` frontmatter, if any.
+///
+/// The Agent Skills spec writes the field space-separated:
+/// `allowed-tools: "Read Glob Bash"`. Splitting on commas alone returned that
+/// as one tool named `Read Glob Bash`, which grants nothing, so `AGT-CAP-001`
+/// could not fire on a real skill. Commas, quotes and `[...]` flow lists are
+/// still accepted.
 #[must_use]
 pub fn frontmatter_tools(skill_md: &str) -> Vec<String> {
     let Some(block) = frontmatter(skill_md) else {
@@ -91,12 +111,9 @@ pub fn frontmatter_tools(skill_md: &str) -> Vec<String> {
         .lines()
         .find_map(|line| line.strip_prefix("allowed-tools:"))
         .map(|value| {
-            value
-                .trim()
-                .trim_matches(['[', ']'])
-                .split(',')
-                .map(|tool| tool.trim().trim_matches(['\'', '"']).to_owned())
-                .filter(|tool| !tool.is_empty())
+            TOOL_TOKEN
+                .find_iter(value)
+                .map(|tool| tool.as_str().to_owned())
                 .collect()
         })
         .unwrap_or_default()
@@ -174,7 +191,9 @@ fn check_capability_escalation(skill_md: &str, policy: &serde_json::Value) -> Ve
     frontmatter_tools(skill_md)
         .into_iter()
         .filter_map(|tool| {
-            let (_, capability) = TOOL_CAPABILITIES.iter().find(|(name, _)| *name == tool)?;
+            // `Bash(git log:*)` narrows Bash; it still grants executes_commands.
+            let base = tool.split_once('(').map_or(tool.as_str(), |(name, _)| name);
+            let (_, capability) = TOOL_CAPABILITIES.iter().find(|(name, _)| *name == base)?;
             let granted = if *capability == "network_access" {
                 matches!(
                     policy
@@ -274,4 +293,114 @@ pub fn audit_skill(files: &SkillFiles) -> Vec<Finding> {
     findings.extend(check_capability_escalation(skill_md, &policy));
     findings.extend(check_policy_prose(skill_md, &policy));
     findings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tools(field: &str) -> Vec<String> {
+        frontmatter_tools(&format!("---\nname: x\n{field}\n---\n\n# X\n"))
+    }
+
+    fn skill(field: &str, policy: &str) -> SkillFiles {
+        SkillFiles::from([
+            (
+                "SKILL.md".to_owned(),
+                format!("---\nname: x\ndescription: Use when testing.\n{field}\n---\n\n# X\n"),
+            ),
+            (
+                "metadata.json".to_owned(),
+                format!("{{\"safety_policy\": {policy}}}"),
+            ),
+        ])
+    }
+
+    fn rules(findings: &[Finding]) -> Vec<&str> {
+        findings.iter().map(|f| f.rule.as_str()).collect()
+    }
+
+    #[test]
+    fn no_frontmatter_declares_no_tools() {
+        assert!(frontmatter_tools("# no frontmatter\n").is_empty());
+    }
+
+    #[test]
+    fn frontmatter_without_allowed_tools_declares_none() {
+        assert!(tools("description: y").is_empty());
+    }
+
+    #[test]
+    fn space_separated_form_the_spec_uses_is_split() {
+        assert_eq!(
+            tools("allowed-tools: Read Glob Bash"),
+            ["Read", "Glob", "Bash"]
+        );
+    }
+
+    #[test]
+    fn comma_separated_form_is_split() {
+        assert_eq!(
+            tools("allowed-tools: Read, Glob,Bash"),
+            ["Read", "Glob", "Bash"]
+        );
+    }
+
+    #[test]
+    fn mixed_separators_are_split() {
+        assert_eq!(
+            tools("allowed-tools: Read, Glob Bash,  WebFetch"),
+            ["Read", "Glob", "Bash", "WebFetch"]
+        );
+    }
+
+    #[test]
+    fn quoted_value_is_unwrapped() {
+        assert_eq!(
+            tools("allowed-tools: \"Read Glob Bash\""),
+            ["Read", "Glob", "Bash"]
+        );
+        assert_eq!(tools("allowed-tools: 'Read Grep'"), ["Read", "Grep"]);
+    }
+
+    #[test]
+    fn flow_list_is_unwrapped() {
+        assert_eq!(tools("allowed-tools: [Bash, 'Read']"), ["Bash", "Read"]);
+        assert_eq!(tools("allowed-tools: [\"Read\", Glob]"), ["Read", "Glob"]);
+    }
+
+    #[test]
+    fn parenthesised_argument_stays_one_token() {
+        assert_eq!(
+            tools("allowed-tools: \"Read Bash(git:*) Bash(git log:*)\""),
+            ["Read", "Bash(git:*)", "Bash(git log:*)"]
+        );
+    }
+
+    #[test]
+    fn space_separated_grant_against_policy_escalates() {
+        let findings = audit_skill(&skill(
+            "allowed-tools: \"Read Grep Bash\"",
+            r#"{"executes_commands": false, "network_access": "none"}"#,
+        ));
+        assert_eq!(rules(&findings), ["AGT-CAP-001"]);
+    }
+
+    #[test]
+    fn scoped_tool_still_grants_its_capability() {
+        let findings = audit_skill(&skill(
+            "allowed-tools: Read Bash(git log:*)",
+            r#"{"executes_commands": false, "network_access": "none"}"#,
+        ));
+        assert_eq!(rules(&findings), ["AGT-CAP-001"]);
+    }
+
+    #[test]
+    fn space_separated_grant_the_policy_allows_does_not_escalate() {
+        let findings = audit_skill(&skill(
+            "allowed-tools: Read Bash WebFetch",
+            r#"{"executes_commands": true, "network_access": "optional"}"#,
+        ));
+        assert!(rules(&findings).is_empty(), "{findings:?}");
+    }
 }
