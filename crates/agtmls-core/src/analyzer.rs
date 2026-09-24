@@ -99,6 +99,9 @@ impl Analyzer {
 
         for rule in self.rules.rules.values() {
             let Some(regex) = &rule.regex else { continue };
+            if !applies(&rule.spec.applies_to, name, content) {
+                continue;
+            }
             let haystack = match rule.spec.scope {
                 Scope::Normalised => flat.as_str(),
                 Scope::Line | Scope::Raw => content,
@@ -168,6 +171,11 @@ impl Analyzer {
         {
             return true;
         }
+        // A script with no extension and no execute bit is still a script
+        // (spec 4.11): `executable` selects by `#!`, so it must be walked.
+        if has_shebang(path) {
+            return true;
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -178,6 +186,39 @@ impl Analyzer {
             false
         }
     }
+}
+
+fn has_shebang(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut head = [0_u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && &head == b"#!"
+}
+
+/// One `applies_to` selector against one file (spec 4.11): `*`, `*.<ext>`
+/// compared case-insensitively, or `executable` for content beginning `#!`.
+/// Any other form matches nothing.
+#[must_use]
+pub fn selector_matches(selector: &str, name: &str, content: &str) -> bool {
+    match selector {
+        "*" => true,
+        "executable" => content.starts_with("#!"),
+        _ => selector
+            .strip_prefix('*')
+            .filter(|ext| ext.starts_with('.') && !ext.contains('*'))
+            .is_some_and(|ext| {
+                let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+                file.to_lowercase().ends_with(&ext.to_lowercase())
+            }),
+    }
+}
+
+/// Whether a pattern rule runs on this file. No selectors means everywhere.
+#[must_use]
+pub fn applies(selectors: &[String], name: &str, content: &str) -> bool {
+    selectors.is_empty() || selectors.iter().any(|s| selector_matches(s, name, content))
 }
 
 /// Source line number for every character of `normalise(content)`.
@@ -200,4 +241,30 @@ fn line_map(content: &str) -> Vec<usize> {
         }
     }
     map
+}
+
+#[cfg(test)]
+mod applies_to_tests {
+    use super::{applies, selector_matches};
+
+    #[test]
+    fn selectors_follow_the_grammar() {
+        assert!(selector_matches("*", "anything.xyz", ""));
+        assert!(selector_matches("*.md", "a/B.MD", ""));
+        assert!(!selector_matches("*.md", "a.mdx", ""));
+        assert!(selector_matches("executable", "run", "#!/bin/sh\n"));
+        assert!(!selector_matches("executable", "run.sh", "echo\n"));
+        assert!(!selector_matches("README.md", "README.md", ""));
+    }
+
+    #[test]
+    fn no_selectors_means_everywhere() {
+        assert!(applies(&[], "x.lua", ""));
+        assert!(!applies(&["*.json".to_owned()], "notes.md", ""));
+        assert!(applies(
+            &["*.json".to_owned(), "executable".to_owned()],
+            "bin/run",
+            "#!/bin/sh\n"
+        ));
+    }
 }
