@@ -11,6 +11,9 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ### Added
 
+- `*.json` files are escape-decoded before normalised matching (agtmls-spec
+  4.3): `decode_json_escapes`, with escaped whitespace as a space so line
+  numbers survive and surrogates combined or replaced with U+FFFD.
 - Pattern rules run only on files their `applies_to` selectors match
   (agtmls-spec 4.11: `*`, `*.<ext>`, `executable` for `#!`), and any file
   beginning with `#!` is audited whatever its name or mode.
