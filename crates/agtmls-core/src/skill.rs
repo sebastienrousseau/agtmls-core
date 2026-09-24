@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use crate::analyzer::Finding;
-use crate::rules::{RuleSet, Severity};
+use crate::rules::{EmojiContext, RuleSet, Severity};
 
 /// Tools that grant a capability a `safety_policy` may be denying.
 ///
@@ -56,26 +56,114 @@ fn finding(
 /// implementation's without the rule file changing.
 #[must_use]
 pub fn check_invisible(rules: &RuleSet, file: &str, content: &str) -> Vec<Finding> {
+    check_invisible_with(rules, file, content, false)
+}
+
+/// Column of each well-formed subdivision flag's first tag, with the number
+/// of code points it covers up to and including the terminator.
+fn subdivision_flags(chars: &[char], context: &EmojiContext) -> BTreeMap<usize, usize> {
+    let mut flags = BTreeMap::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == context.flag_base() {
+            let mut j = i + 1;
+            while j < chars.len() && context.is_tag(chars[j]) {
+                j += 1;
+            }
+            if j > i + 1 && j < chars.len() && chars[j] == context.terminator() {
+                flags.insert(i + 1, j - i);
+                i = j;
+            }
+        }
+        i += 1;
+    }
+    flags
+}
+
+/// `AGT-STEG-001` with the emoji context applied (spec 4.10).
+///
+/// A selector directly after an emoji base is an emoji as written: it is
+/// `AGT-STEG-002` at LOW and reported only when `pedantic`. A well-formed
+/// subdivision flag is `AGT-STEG-002` at LOW, always, once per flag. Without
+/// a declared context every selector and tag character is a channel.
+#[must_use]
+pub fn check_invisible_with(
+    rules: &RuleSet,
+    file: &str,
+    content: &str,
+    pedantic: bool,
+) -> Vec<Finding> {
     let Some(rule) = rules.rules.get("AGT-STEG-001") else {
         return Vec::new();
     };
+    let ctx = rule.emoji_context();
     let mut findings = Vec::new();
     for (line_index, line) in content.lines().enumerate() {
-        for (column, ch) in line.chars().enumerate() {
-            if let Some(name) = rule.invisible_name(ch) {
-                findings.push(finding(
-                    file,
-                    line_index + 1,
-                    rule.spec.severity,
-                    &rule.spec.category,
-                    &rule.spec.id,
-                    format!(
-                        "Invisible unicode character detected: {name} (U+{:04X}) at column {}",
-                        ch as u32,
-                        column + 1
-                    ),
-                ));
+        let chars: Vec<char> = line.chars().collect();
+        let flags = ctx.map_or_else(BTreeMap::new, |c| subdivision_flags(&chars, c));
+        let covered = |column: usize| {
+            flags
+                .iter()
+                .any(|(start, count)| column >= *start && column < start + count)
+        };
+        for (column, &ch) in chars.iter().enumerate() {
+            let Some(name) = rule.invisible_name(ch) else {
+                continue;
+            };
+            if let Some(context) = ctx {
+                if context.is_selector(ch) {
+                    let after_base = column > 0 && context.is_base(chars[column - 1]);
+                    let in_run = chars
+                        .get(column + 1)
+                        .is_some_and(|&n| context.is_selector(n));
+                    if after_base && !in_run {
+                        if pedantic {
+                            findings.push(finding(
+                                file,
+                                line_index + 1,
+                                Severity::Low,
+                                &rule.spec.category,
+                                "AGT-STEG-002",
+                                format!(
+                                    "{name} (U+{:04X}) after an emoji base at column {}: emoji presentation, not a channel",
+                                    ch as u32,
+                                    column + 1
+                                ),
+                            ));
+                        }
+                        continue;
+                    }
+                }
+                if covered(column) {
+                    if let Some(count) = flags.get(&column) {
+                        findings.push(finding(
+                            file,
+                            line_index + 1,
+                            Severity::Low,
+                            &rule.spec.category,
+                            "AGT-STEG-002",
+                            format!(
+                                "Tag sequence forming a subdivision flag at column {} ({} tag character(s), terminated)",
+                                column + 1,
+                                count - 1
+                            ),
+                        ));
+                    }
+                    continue;
+                }
             }
+            findings.push(finding(
+                file,
+                line_index + 1,
+                rule.spec.severity,
+                &rule.spec.category,
+                &rule.spec.id,
+                format!(
+                    "Invisible unicode character detected: {name} (U+{:04X}) at column {}",
+                    ch as u32,
+                    column + 1
+                ),
+            ));
         }
     }
     findings
@@ -274,4 +362,156 @@ pub fn audit_skill(files: &SkillFiles) -> Vec<Finding> {
     findings.extend(check_capability_escalation(skill_md, &policy));
     findings.extend(check_policy_prose(skill_md, &policy));
     findings
+}
+
+#[cfg(test)]
+mod emoji_context_tests {
+    use super::*;
+
+    const STEG: &str = r#"
+id = "AGT-STEG-001"
+category = "steganography"
+severity = "critical"
+title = "Invisible code point"
+kind = "structural"
+scope = "raw"
+applies_to = ["*"]
+code_points = [ { cp = "U+200B", name = "Zero-width space" } ]
+code_point_ranges = [
+  { from = "U+FE00",  to = "U+FE0F",  name = "Variation selectors" },
+  { from = "U+E0000", to = "U+E007F", name = "Unicode tag block" },
+  { from = "U+E0100", to = "U+E01EF", name = "Variation selectors supplement" },
+]
+[emoji_context]
+selectors = { from = "U+FE0E", to = "U+FE0F" }
+keycap = "U+20E3"
+base_points = ["U+0023", "U+0031"]
+base_ranges = [ { from = "U+2600", to = "U+27BF", name = "Symbols" }, { from = "U+1F000", to = "U+1FAFF", name = "Emoji" } ]
+[emoji_context.subdivision_flag]
+base = "U+1F3F4"
+tags_from = "U+E0061"
+tags_to = "U+E007A"
+terminator = "U+E007F"
+"#;
+
+    const PLAIN: &str = r#"
+id = "AGT-STEG-001"
+category = "steganography"
+severity = "critical"
+title = "Invisible code point"
+kind = "structural"
+scope = "raw"
+applies_to = ["*"]
+code_points = [ { cp = "U+200B", name = "Zero-width space" } ]
+code_point_ranges = [ { from = "U+FE00", to = "U+FE0F", name = "Variation selectors" }, { from = "U+E0000", to = "U+E007F", name = "Unicode tag block" } ]
+"#;
+
+    const FLAG: &str = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+
+    fn rules(text: &str) -> RuleSet {
+        RuleSet::from_sources([("AGT-STEG-001", text)]).expect("rule loads")
+    }
+
+    fn ids(rules: &RuleSet, text: &str, pedantic: bool) -> Vec<(String, String)> {
+        check_invisible_with(rules, "SKILL.md", text, pedantic)
+            .into_iter()
+            .map(|f| (f.rule, f.severity))
+            .collect()
+    }
+
+    #[test]
+    fn a_selector_after_an_emoji_base_is_silent_unless_pedantic() {
+        let rules = rules(STEG);
+        assert!(
+            ids(
+                &rules,
+                "Done \u{2705}\u{FE0F} and \u{1F680}\u{FE0F}.",
+                false
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            ids(&rules, "Done \u{2705}\u{FE0F}.", true),
+            vec![("AGT-STEG-002".to_owned(), "LOW".to_owned())]
+        );
+    }
+
+    #[test]
+    fn a_keycap_is_an_emoji_base() {
+        assert!(
+            ids(
+                &rules(STEG),
+                "Press 1\u{FE0F}\u{20E3} and #\u{FE0F}\u{20E3}.",
+                false
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_run_a_letter_base_and_the_supplement_stay_critical() {
+        let rules = rules(STEG);
+        let critical = ("AGT-STEG-001".to_owned(), "CRITICAL".to_owned());
+        assert_eq!(
+            ids(&rules, "Done \u{2705}\u{FE0F}\u{FE0F}.", false),
+            vec![critical.clone(), critical.clone()]
+        );
+        assert_eq!(
+            ids(&rules, "Plain a\u{FE0F} text.", false),
+            vec![critical.clone()]
+        );
+        assert_eq!(ids(&rules, "\u{FE0F} text.", false), vec![critical.clone()]);
+        assert_eq!(
+            ids(&rules, "Done \u{2705}\u{E0100}.", false),
+            vec![critical]
+        );
+    }
+
+    #[test]
+    fn a_well_formed_subdivision_flag_is_low_once_and_always() {
+        let findings =
+            check_invisible_with(&rules(STEG), "SKILL.md", &format!("England: {FLAG}"), false);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule, "AGT-STEG-002");
+        assert_eq!(findings[0].severity, "LOW");
+        assert!(
+            findings[0].message.contains("5 tag character(s)"),
+            "{}",
+            findings[0].message
+        );
+    }
+
+    #[test]
+    fn tags_outside_a_flag_stay_critical() {
+        let rules = rules(STEG);
+        assert_eq!(
+            ids(&rules, "Notes\u{E0067}\u{E0062}\u{E007F} here.", false).len(),
+            3
+        );
+        assert_eq!(
+            ids(&rules, "\u{1F3F4}\u{E0067}\u{E0062} here.", false).len(),
+            2
+        );
+        assert_eq!(
+            ids(&rules, "\u{1F3F4}\u{E0067}\u{E0041}\u{E007F}.", false).len(),
+            3
+        );
+        assert!(
+            ids(&rules, "\u{1F3F4}\u{E0067}\u{E0062} here.", false)
+                .iter()
+                .all(|(r, _)| r == "AGT-STEG-001")
+        );
+    }
+
+    #[test]
+    fn without_a_context_every_selector_and_tag_is_critical() {
+        let rules = rules(PLAIN);
+        assert_eq!(ids(&rules, "Done \u{2705}\u{FE0F}.", false).len(), 1);
+        assert_eq!(ids(&rules, FLAG, true).len(), 6);
+        assert!(
+            ids(&rules, "Done \u{2705}\u{FE0F}.", true)
+                .iter()
+                .all(|(r, s)| r == "AGT-STEG-001" && s == "CRITICAL")
+        );
+    }
 }

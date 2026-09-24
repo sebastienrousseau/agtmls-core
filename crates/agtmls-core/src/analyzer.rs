@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::rules::{RuleSet, Scope, Severity, normalise};
-use crate::skill::check_invisible;
+use crate::skill::check_invisible_with;
 
 /// Files an agent could read or a user could execute.
 ///
@@ -48,13 +48,24 @@ pub struct Finding {
 #[derive(Debug, Clone)]
 pub struct Analyzer {
     rules: RuleSet,
+    pedantic: bool,
 }
 
 impl Analyzer {
     /// Build an analyzer over `rules`.
     #[must_use]
     pub const fn new(rules: RuleSet) -> Self {
-        Self { rules }
+        Self {
+            rules,
+            pedantic: false,
+        }
+    }
+
+    /// Also report emoji-presentation selectors (`AGT-STEG-002`, LOW).
+    #[must_use]
+    pub const fn pedantic(mut self, pedantic: bool) -> Self {
+        self.pedantic = pedantic;
+        self
     }
 
     /// The rule set in use.
@@ -72,7 +83,7 @@ impl Analyzer {
     /// clean on a file full of smuggled instructions.
     #[must_use]
     pub fn audit_str(&self, name: &str, content: &str) -> Vec<Finding> {
-        let mut findings = check_invisible(&self.rules, name, content);
+        let mut findings = check_invisible_with(&self.rules, name, content, self.pedantic);
         findings.extend(self.audit_patterns(name, content));
         findings.sort_by(|a, b| (a.line, &a.rule).cmp(&(b.line, &b.rule)));
         findings.dedup_by(|a, b| a.line == b.line && a.rule == b.rule && a.message == b.message);

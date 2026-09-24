@@ -89,6 +89,122 @@ pub struct RuleSpec {
     /// Code point ranges the enumeration cannot practically cover.
     #[serde(default)]
     pub code_point_ranges: Vec<CodePointRange>,
+    /// What makes a selector or a tag sequence an emoji rather than a channel
+    /// (spec 4.10). Declared on `AGT-STEG-001`; absent, every one is a channel.
+    #[serde(default)]
+    pub emoji_context: Option<EmojiContextSpec>,
+}
+
+/// An inclusive span of code points, `U+XXXX` to `U+XXXX`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Span {
+    /// Inclusive lower bound.
+    pub from: String,
+    /// Inclusive upper bound.
+    pub to: String,
+}
+
+/// A well-formed subdivision flag: base, one or more tags, terminator.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubdivisionFlagSpec {
+    /// The flag base, `U+1F3F4`.
+    pub base: String,
+    /// First tag letter, `U+E0061`.
+    pub tags_from: String,
+    /// Last tag letter, `U+E007A`.
+    pub tags_to: String,
+    /// The cancel tag that closes the sequence, `U+E007F`.
+    pub terminator: String,
+}
+
+/// The `emoji_context` table of `AGT-STEG-001`, as declared.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmojiContextSpec {
+    /// The selectors that pick an emoji presentation.
+    pub selectors: Span,
+    /// The combining enclosing keycap.
+    pub keycap: String,
+    /// Bases that take a selector: keycap digits and symbols.
+    #[serde(default)]
+    pub base_points: Vec<String>,
+    /// Bases that take a selector: the emoji blocks.
+    #[serde(default)]
+    pub base_ranges: Vec<CodePointRange>,
+    /// The one tag sequence that is a flag, not a channel.
+    pub subdivision_flag: SubdivisionFlagSpec,
+}
+
+/// `EmojiContextSpec` with every code point resolved, so the per-character
+/// decision in `check_invisible` costs no parsing.
+#[derive(Debug, Clone)]
+pub struct EmojiContext {
+    selectors: (char, char),
+    base_points: Vec<char>,
+    base_ranges: Vec<(char, char)>,
+    flag_base: char,
+    tags: (char, char),
+    terminator: char,
+}
+
+impl EmojiContext {
+    fn resolve(spec: &EmojiContextSpec) -> Option<Self> {
+        Some(Self {
+            selectors: (
+                parse_code_point(&spec.selectors.from)?,
+                parse_code_point(&spec.selectors.to)?,
+            ),
+            base_points: spec
+                .base_points
+                .iter()
+                .filter_map(|p| parse_code_point(p))
+                .collect(),
+            base_ranges: spec
+                .base_ranges
+                .iter()
+                .filter_map(|r| Some((parse_code_point(&r.from)?, parse_code_point(&r.to)?)))
+                .collect(),
+            flag_base: parse_code_point(&spec.subdivision_flag.base)?,
+            tags: (
+                parse_code_point(&spec.subdivision_flag.tags_from)?,
+                parse_code_point(&spec.subdivision_flag.tags_to)?,
+            ),
+            terminator: parse_code_point(&spec.subdivision_flag.terminator)?,
+        })
+    }
+
+    /// Whether `ch` is a presentation selector.
+    #[must_use]
+    pub fn is_selector(&self, ch: char) -> bool {
+        ch >= self.selectors.0 && ch <= self.selectors.1
+    }
+
+    /// Whether `ch` is a base a selector may follow.
+    #[must_use]
+    pub fn is_base(&self, ch: char) -> bool {
+        self.base_points.contains(&ch)
+            || self
+                .base_ranges
+                .iter()
+                .any(|(lo, hi)| ch >= *lo && ch <= *hi)
+    }
+
+    /// Whether `ch` is a tag letter.
+    #[must_use]
+    pub fn is_tag(&self, ch: char) -> bool {
+        ch >= self.tags.0 && ch <= self.tags.1
+    }
+
+    /// The flag base.
+    #[must_use]
+    pub const fn flag_base(&self) -> char {
+        self.flag_base
+    }
+
+    /// The cancel tag.
+    #[must_use]
+    pub const fn terminator(&self) -> char {
+        self.terminator
+    }
 }
 
 /// One named code point declared by a structural rule.
@@ -138,6 +254,8 @@ pub struct Rule {
     /// Resolved code points, by character, for structural rules that declare
     /// them. Built from the rule data so neither implementation owns the set.
     invisible: BTreeMap<char, String>,
+    /// The resolved emoji context, when the rule declares one.
+    emoji: Option<EmojiContext>,
 }
 
 impl Rule {
@@ -152,6 +270,12 @@ impl Rule {
             let high = parse_code_point(&range.to)?;
             (ch >= low && ch <= high).then_some(range.name.as_str())
         })
+    }
+
+    /// The emoji context this rule declares, resolved.
+    #[must_use]
+    pub const fn emoji_context(&self) -> Option<&EmojiContext> {
+        self.emoji.as_ref()
     }
 }
 
@@ -245,10 +369,12 @@ impl RuleSet {
                 .iter()
                 .filter_map(|point| Some((parse_code_point(&point.cp)?, point.name.clone())))
                 .collect();
+            let emoji = spec.emoji_context.as_ref().and_then(EmojiContext::resolve);
             let rule = Rule {
                 spec,
                 regex,
                 invisible,
+                emoji,
             };
             rule.self_test()?;
             rules.insert(rule.spec.id.clone(), rule);
