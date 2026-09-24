@@ -11,6 +11,9 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ### Added
 
+- Pattern rules run only on files their `applies_to` selectors match
+  (agtmls-spec 4.11: `*`, `*.<ext>`, `executable` for `#!`), and any file
+  beginning with `#!` is audited whatever its name or mode.
 - Emoji context for `AGT-STEG-001` (agtmls-spec 4.10): a variation selector
   directly after an emoji base, and a well-formed subdivision flag, are
   `AGT-STEG-002` at LOW rather than CRITICAL. The selector is reported only
