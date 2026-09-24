@@ -91,7 +91,15 @@ impl Analyzer {
     }
 
     fn audit_patterns(&self, name: &str, content: &str) -> Vec<Finding> {
-        let flat = normalise(content);
+        // spec 4.3: a model reads a JSON tool description decoded.
+        let decoded;
+        let source = if name.to_lowercase().ends_with(".json") {
+            decoded = decode_json_escapes(content);
+            decoded.as_str()
+        } else {
+            content
+        };
+        let flat = normalise(source);
         // The line map costs a pass over every character, so it is built only
         // once something has actually matched. Almost every file is clean.
         let mut line_of: Option<Vec<usize>> = None;
@@ -108,7 +116,7 @@ impl Analyzer {
             };
             for m in regex.find_iter(haystack) {
                 let line = if matches!(rule.spec.scope, Scope::Normalised) {
-                    let map = line_of.get_or_insert_with(|| line_map(content));
+                    let map = line_of.get_or_insert_with(|| line_map(source));
                     map.get(m.start()).copied().unwrap_or(1)
                 } else {
                     content[..m.start()].matches('\n').count() + 1
@@ -241,6 +249,113 @@ fn line_map(content: &str) -> Vec<usize> {
         }
     }
     map
+}
+
+/// JSON string escapes decoded, never creating a line (spec 4.3).
+///
+/// Escaped whitespace and any decoded line terminator become a space, so line
+/// numbers still point into the source; a surrogate pair is one code point,
+/// a lone surrogate U+FFFD.
+#[must_use]
+pub fn decode_json_escapes(content: &str) -> String {
+    const REPLACEMENT: char = '\u{FFFD}';
+    let mut out = String::with_capacity(content.len());
+    let mut pending_high: Option<u32> = None;
+    let mut chars = content.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        let escape = if ch == '\\' {
+            match content[i + 1..].chars().next() {
+                Some(c @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')) => Some((c, None)),
+                Some('u') => content
+                    .get(i + 2..i + 6)
+                    .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()))
+                    .and_then(|h| u32::from_str_radix(h, 16).ok())
+                    .map(|code| ('u', Some(code))),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let Some((kind, code)) = escape else {
+            if pending_high.take().is_some() {
+                out.push(REPLACEMENT);
+            }
+            out.push(ch);
+            continue;
+        };
+        let skip = if kind == 'u' { 5 } else { 1 };
+        for _ in 0..skip {
+            chars.next();
+        }
+        match code {
+            None => {
+                if pending_high.take().is_some() {
+                    out.push(REPLACEMENT);
+                }
+                out.push(match kind {
+                    '"' => '"',
+                    '\\' => '\\',
+                    '/' => '/',
+                    _ => ' ',
+                });
+            }
+            Some(high @ 0xD800..=0xDBFF) => {
+                if pending_high.replace(high).is_some() {
+                    out.push(REPLACEMENT);
+                }
+            }
+            Some(low @ 0xDC00..=0xDFFF) => match pending_high.take() {
+                Some(high) => out.push(
+                    char::from_u32(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+                        .unwrap_or(REPLACEMENT),
+                ),
+                None => out.push(REPLACEMENT),
+            },
+            Some(other) => {
+                if pending_high.take().is_some() {
+                    out.push(REPLACEMENT);
+                }
+                let decoded = char::from_u32(other).unwrap_or(REPLACEMENT);
+                out.push(
+                    if matches!(
+                        decoded,
+                        '\n' | '\r' | '\u{2028}' | '\u{2029}' | '\u{85}' | '\u{0b}' | '\u{0c}'
+                    ) {
+                        ' '
+                    } else {
+                        decoded
+                    },
+                );
+            }
+        }
+    }
+    if pending_high.is_some() {
+        out.push(REPLACEMENT);
+    }
+    out
+}
+
+#[cfg(test)]
+mod json_escape_tests {
+    use super::decode_json_escapes as d;
+
+    #[test]
+    fn escapes_decode_and_whitespace_becomes_a_space() {
+        assert_eq!(d(r#"a\nb\tc\"d\\e\/f"#), "a b c\"d\\e/f");
+        assert_eq!(d(r"A😀"), "A\u{1F600}");
+        assert_eq!(d(r"\u000a"), " ");
+        assert_eq!(d(r"\\n"), "\\n");
+    }
+
+    #[test]
+    fn every_malformed_surrogate_becomes_one_replacement() {
+        assert_eq!(d(r"\ud83dx\ude00"), "\u{FFFD}x\u{FFFD}");
+        assert_eq!(d(r"\ud83d\n"), "\u{FFFD} ");
+        assert_eq!(d(r"\ud83d😀"), "\u{FFFD}\u{1F600}");
+        assert_eq!(d(r"\ud83dA"), "\u{FFFD}A");
+        assert_eq!(d(r"\ude00"), "\u{FFFD}");
+        assert_eq!(d(r"\ud83d"), "\u{FFFD}");
+    }
 }
 
 #[cfg(test)]
