@@ -14,7 +14,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  \
          agtmls-rs digest <skill-dir>\n  \
-         agtmls-rs audit  <path> --rules <dir> [--json]\n  \
+         agtmls-rs audit  <path> --rules <dir> [--json] [--pedantic]\n  \
          agtmls-rs manifest <skill-dir> [--json]\n  \
          agtmls-rs verify <target> --agent <claude|codex|aider> [--json]"
     );
@@ -27,6 +27,7 @@ fn main() -> ExitCode {
         return usage();
     };
     let json = args.iter().any(|a| a == "--json");
+    let pedantic = args.iter().any(|a| a == "--pedantic");
     let rules_dir = args
         .iter()
         .position(|a| a == "--rules")
@@ -69,7 +70,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        ("audit", Some(path)) => audit(&path, rules_dir.as_deref(), json),
+        ("audit", Some(path)) => audit(&path, rules_dir.as_deref(), json, pedantic),
         ("verify", Some(path)) => {
             let agent = args
                 .iter()
@@ -185,7 +186,7 @@ fn audit_skill_dirs(root: &Path) -> Vec<agtmls_core::Finding> {
     findings
 }
 
-fn audit(path: &Path, rules_dir: Option<&Path>, json: bool) -> ExitCode {
+fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> ExitCode {
     let Some(rules_dir) = rules_dir else {
         eprintln!("error: --rules <dir> is required (agtmls-spec/rules)");
         return ExitCode::from(2);
@@ -197,7 +198,7 @@ fn audit(path: &Path, rules_dir: Option<&Path>, json: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let analyzer = Analyzer::new(rules);
+    let analyzer = Analyzer::new(rules).pedantic(pedantic);
 
     let mut findings = Vec::new();
     if path.is_dir() {

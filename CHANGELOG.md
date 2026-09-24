@@ -11,6 +11,11 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ### Added
 
+- Emoji context for `AGT-STEG-001` (agtmls-spec 4.10): a variation selector
+  directly after an emoji base, and a well-formed subdivision flag, are
+  `AGT-STEG-002` at LOW rather than CRITICAL. The selector is reported only
+  with `audit --pedantic` (`Analyzer::pedantic`); the flag always. The line
+  is the rule's `emoji_context` data; without it the behaviour is unchanged.
 - `digest`: the content-addressed skill identity defined by
   `agtmls-spec/spec/03-integrity.md`. Verified against all 14 shared vectors
   and against all 31 skills in the `agtmls` registry, which digest identically
