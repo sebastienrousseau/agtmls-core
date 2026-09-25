@@ -38,6 +38,16 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
   `agtmls-rs attest <manifest|capabilities> <dir> --name --rules
   [--digest]` prints one. `cargo test` rebuilds every attestation vector
   from its inputs and compares it byte for byte.
+- Index signatures and the advisory feed (agtmls-spec chapters 9 and 11).
+  `verify --registry <dir> --signatures` requires `index.json` to carry an
+  `SSHSIG` under `agtmls-index@v1` that verifies against the registry's
+  `ALLOWED_SIGNERS` (or `--allowed-signers`); a signed `advisories.json`
+  in the registry is consulted on every verify, and an installed digest a
+  live advisory lists exits `6` naming it. An unverified feed is never
+  read. Exit codes `4` unsigned, `5` bad signature, `6` revoked, in the
+  spec's precedence `5`, `3`, `6`, `4`. `signatures` and `advisories`
+  modules; `signature` and `advisories` subcommands for the conformance
+  runner. Every signature and advisory vector is replayed by `cargo test`.
 - `*.json` files are escape-decoded before normalised matching (agtmls-spec
   4.3): `decode_json_escapes`, with escaped whitespace as a space so line
   numbers survive and surrogates combined or replaced with U+FFFD.

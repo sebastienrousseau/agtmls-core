@@ -21,11 +21,13 @@
 // `cargo test`. A README example that has never been compiled is a guess.
 #![doc = include_str!("../../../README.md")]
 
+pub mod advisories;
 pub mod analyzer;
 pub mod attestations;
 pub mod digest;
 pub mod lockfile;
 pub mod rules;
+pub mod signatures;
 pub mod skill;
 
 pub use analyzer::{Analyzer, Finding};

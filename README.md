@@ -75,6 +75,10 @@ agtmls-rs digest   skills/my-skill
 agtmls-rs manifest skills/my-skill --json
 agtmls-rs audit    skills/ --rules ../agtmls-spec/rules --json
 agtmls-rs attest   capabilities skills/my-skill --name my-skill --rules ../agtmls-spec/rules
+
+# An install checked against its lockfile, the registry's index signature
+# and its signed advisory feed (agtmls-spec chapters 6, 9 and 11)
+agtmls-rs verify . --agent claude --registry <registry-dir> --signatures
 ```
 
 ## Rules are data
@@ -105,15 +109,17 @@ The test suite **fails rather than skips** when the spec cannot be found. A
 conformance suite that skips reports green while proving nothing, which is
 worse than having none.
 
-Claimed level: **L3 (Analyzer)**.
+Claimed level: **L4 (Registry)**.
 
 | Level | Evidence |
 | :--- | :--- |
 | L2 | All 14 digest vectors, plus all 31 skills in the `agtmls` registry digesting identically under both implementations |
-| L3 | All 16 security corpus cases, including evasion variants, producing an **identical rule set** in both implementations |
+| L3 | Every security corpus case, including evasion variants, producing an **identical rule set** in both implementations |
+| L4 | Lockfile verification agreeing with `agtmls` case by case |
 
-L4 (Registry) is not claimed: install and lockfile semantics are specified in
-`spec/06-lockfile.md` but implemented in neither.
+The signature and advisory vectors of chapters 9 and 11 are replayed by
+`cargo test`; they join the runner's levels once those chapters are
+normative.
 
 The runner recomputes the level, and a claim above the computed level fails
 the build. This crate briefly claimed L3 before the structural rules were
@@ -126,6 +132,9 @@ claim nobody checked is the defect the specification exists to prevent.
 - MSRV pinned in `Cargo.toml` and proven in CI, not asserted in prose.
 - No async runtime, no network, no telemetry. The analyzer is given bytes and
   returns findings.
+- Signatures are verified by `ssh-keygen -Y verify`, as agtmls-spec 9.5
+  permits, so the format has one reading. A missing `ssh-keygen` is an error,
+  never a verdict.
 - Every input is size-capped; symlinks are never followed.
 
 ## Licence
