@@ -42,8 +42,9 @@ pub const SPEC_VERSION: &str = "0.1.0";
 /// Conformance level claimed by this crate. Recomputed by the conformance
 /// runner; a claim that differs from the computed level is a build failure.
 ///
-/// L4: everything in L3, plus lockfile verification semantics. Verified by
-/// comparing this crate's output with the Python implementation's, case by
-/// case — not only against expected values, since two implementations can each
-/// match the expectations and still disagree with each other.
-pub const CONFORMANCE_LEVEL: &str = "L4";
+/// L5: everything in L4, plus index signatures, advisories and attestations
+/// (agtmls-spec chapters 9 to 11). Verified by comparing this crate's output
+/// with the Python implementation's, case by case — not only against
+/// expected values, since two implementations can each match the
+/// expectations and still disagree with each other.
+pub const CONFORMANCE_LEVEL: &str = "L5";
