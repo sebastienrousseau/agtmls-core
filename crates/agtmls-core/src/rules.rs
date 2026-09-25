@@ -7,11 +7,13 @@
 //! adding a rule means adding a file and a corpus case — never writing the
 //! same regex twice in two languages and hoping they stay equivalent.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use regex::Regex;
 use serde::Deserialize;
+use unicode_normalization::UnicodeNormalization;
 
 /// Severity, ordered so comparisons mean what they read like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -284,6 +286,9 @@ impl Rule {
 pub struct RuleSet {
     /// Rules by identifier, in sorted order.
     pub rules: BTreeMap<String, Rule>,
+    /// The code points `AGT-STEG-001` declares, as sorted inclusive ranges:
+    /// what normalised matching strips (spec 4.3).
+    hidden: Vec<(char, char)>,
 }
 
 /// Why a rule set could not be loaded.
@@ -379,7 +384,34 @@ impl RuleSet {
             rule.self_test()?;
             rules.insert(rule.spec.id.clone(), rule);
         }
-        Ok(Self { rules })
+        let hidden = rules
+            .get("AGT-STEG-001")
+            .map(hidden_ranges)
+            .unwrap_or_default();
+        Ok(Self { rules, hidden })
+    }
+
+    /// The text as an agent reads it, before whitespace is collapsed (spec
+    /// 4.3): every code point `AGT-STEG-001` declares removed, then NFKC.
+    ///
+    /// A keyword split by a zero-width space or a tag character, or spelt in
+    /// fullwidth letters, is the keyword to a model. `AGT-STEG-001` reports
+    /// the hidden code points from the unfolded text. Neither step removes or
+    /// creates a line terminator, so line numbers taken from the result still
+    /// point into the source. ASCII is returned as is: both steps are the
+    /// identity on it, and almost every file is ASCII.
+    #[must_use]
+    pub fn fold<'a>(&self, content: &'a str) -> Cow<'a, str> {
+        if content.is_ascii() {
+            return Cow::Borrowed(content);
+        }
+        let visible: String = content.chars().filter(|&ch| !self.is_hidden(ch)).collect();
+        Cow::Owned(visible.nfkc().collect())
+    }
+
+    fn is_hidden(&self, ch: char) -> bool {
+        let at = self.hidden.partition_point(|&(_, high)| high < ch);
+        self.hidden.get(at).is_some_and(|&(low, _)| low <= ch)
     }
 
     /// Number of loaded rules.
@@ -418,6 +450,27 @@ impl Rule {
         }
         Ok(())
     }
+}
+
+/// Every code point a rule declares, singly or in ranges, as sorted and
+/// merged inclusive ranges.
+fn hidden_ranges(rule: &Rule) -> Vec<(char, char)> {
+    let mut ranges: Vec<(char, char)> = rule.invisible.keys().map(|&ch| (ch, ch)).collect();
+    ranges.extend(
+        rule.spec
+            .code_point_ranges
+            .iter()
+            .filter_map(|r| Some((parse_code_point(&r.from)?, parse_code_point(&r.to)?))),
+    );
+    ranges.sort_unstable();
+    let mut merged: Vec<(char, char)> = Vec::with_capacity(ranges.len());
+    for (low, high) in ranges {
+        match merged.last_mut() {
+            Some(last) if u32::from(low) <= u32::from(last.1) + 1 => last.1 = last.1.max(high),
+            _ => merged.push((low, high)),
+        }
+    }
+    merged
 }
 
 /// Collapse every whitespace run to a single space.
