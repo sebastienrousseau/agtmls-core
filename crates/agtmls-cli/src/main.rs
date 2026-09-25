@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use agtmls_core::advisories::{self, Revocation};
 use agtmls_core::signatures::{self, Status};
-use agtmls_core::{Analyzer, Problem, RuleSet, digest, lockfile, skill};
+use agtmls_core::{Analyzer, Problem, RuleSet, attestations, digest, lockfile, skill};
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -18,6 +18,8 @@ fn usage() -> ExitCode {
          agtmls-rs digest <skill-dir>\n  \
          agtmls-rs audit  <path> --rules <dir> [--json] [--pedantic]\n  \
          agtmls-rs manifest <skill-dir> [--json]\n  \
+         agtmls-rs attest <manifest|capabilities> <skill-dir> --name <skill> --rules <dir>\n    \
+                          [--digest sha256:<hex>]\n  \
          agtmls-rs verify <target> --agent <claude|codex|aider> [--json]\n    \
                           [--registry <dir> [--signatures] [--allowed-signers <file>]]\n  \
          agtmls-rs signature <file> --sig <file> --allowed-signers <file> --namespace <ns>\n    \
@@ -78,6 +80,7 @@ fn main() -> ExitCode {
             }
         },
         ("audit", Some(path)) => audit(&path, rules_dir.as_deref(), json, pedantic),
+        ("attest", Some(kind)) => attest(&kind, &args, rules_dir.as_deref()),
         ("verify", Some(path)) => {
             let require_signed = args.iter().any(|a| a == "--signatures");
             let registry = option(&args, "--registry")
@@ -101,6 +104,14 @@ fn main() -> ExitCode {
     }
 }
 
+/// The value after `flag`, if present.
+fn option<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+}
+
 /// Exit code 3: the install cannot be trusted. Distinct from 1 (error) and
 /// 2 (usage) so a calling script can branch on it.
 const EXIT_INTEGRITY_FAILURE: u8 = 3;
@@ -109,14 +120,6 @@ const EXIT_INTEGRITY_FAILURE: u8 = 3;
 const EXIT_UNSIGNED: u8 = 4;
 const EXIT_BAD_SIGNATURE: u8 = 5;
 const EXIT_REVOKED: u8 = 6;
-
-/// The value after `flag`, if present.
-fn option<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.iter()
-        .position(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .map(String::as_str)
-}
 
 /// Where a registry keeps what `verify` judges an install by.
 struct Registry {
@@ -487,12 +490,12 @@ fn read_skill(dir: &Path) -> Option<skill::SkillFiles> {
 }
 
 /// Every skill directory at or below `root`, structurally analysed.
-fn audit_skill_dirs(root: &Path) -> Vec<agtmls_core::Finding> {
+fn audit_skill_dirs(rules: &RuleSet, root: &Path) -> Vec<agtmls_core::Finding> {
     let mut findings = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if let Some(files) = read_skill(&dir) {
-            findings.extend(skill::audit_skill(&files));
+            findings.extend(skill::audit_skill(rules, &files));
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -507,6 +510,48 @@ fn audit_skill_dirs(root: &Path) -> Vec<agtmls_core::Finding> {
         }
     }
     findings
+}
+
+/// `attest <kind> <skill-dir>`: one attestation, rendered canonically
+/// (agtmls-spec chapter 10), on standard output.
+fn attest(kind: &Path, args: &[String], rules_dir: Option<&Path>) -> ExitCode {
+    let (Some(dir), Some(name), Some(rules_dir)) = (args.get(2), option(args, "--name"), rules_dir)
+    else {
+        eprintln!("error: attest needs <kind> <skill-dir> --name <skill> --rules <dir>");
+        return ExitCode::from(2);
+    };
+    let rules = match RuleSet::load(rules_dir) {
+        Ok(rules) => rules,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let dir = Path::new(dir);
+    if !dir.is_dir() {
+        eprintln!("error: {} is not a directory", dir.display());
+        return ExitCode::FAILURE;
+    }
+    let statement = match kind.to_str() {
+        Some("manifest") => attestations::manifest_statement(name, dir),
+        Some("capabilities") => {
+            attestations::capabilities_statement(&rules, name, dir, option(args, "--digest"))
+        }
+        _ => {
+            eprintln!("error: attest kind must be manifest or capabilities");
+            return ExitCode::from(2);
+        }
+    };
+    match statement {
+        Ok(statement) => {
+            print!("{}", attestations::render(&statement));
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> ExitCode {
@@ -531,7 +576,7 @@ fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> E
         // pattern rules here left the binary silently weaker than the library
         // it is built on -- caught by the cross-implementation differential,
         // not by this crate's own tests.
-        findings.extend(audit_skill_dirs(path));
+        findings.extend(audit_skill_dirs(analyzer.rules(), path));
         let mut stack = vec![path.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {

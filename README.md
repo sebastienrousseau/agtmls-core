@@ -74,6 +74,7 @@ never needs a filesystem.
 agtmls-rs digest   skills/my-skill
 agtmls-rs manifest skills/my-skill --json
 agtmls-rs audit    skills/ --rules ../agtmls-spec/rules --json
+agtmls-rs attest   capabilities skills/my-skill --name my-skill --rules ../agtmls-spec/rules
 
 # An install checked against its lockfile, the registry's index signature
 # and its signed advisory feed (agtmls-spec chapters 6, 9 and 11)

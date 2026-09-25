@@ -95,6 +95,10 @@ pub struct RuleSpec {
     /// (spec 4.10). Declared on `AGT-STEG-001`; absent, every one is a channel.
     #[serde(default)]
     pub emoji_context: Option<EmojiContextSpec>,
+    /// The capability each tool grants, for `AGT-CAP-001` (spec 10.5).
+    /// Declared as data so neither implementation keeps its own copy.
+    #[serde(default)]
+    pub tool_capabilities: BTreeMap<String, String>,
 }
 
 /// An inclusive span of code points, `U+XXXX` to `U+XXXX`.
@@ -382,6 +386,13 @@ impl RuleSet {
                 emoji,
             };
             rule.self_test()?;
+            if rule.spec.id == "AGT-CAP-001" && rule.spec.tool_capabilities.is_empty() {
+                // Fail closed: without the table the rule would grant nothing
+                // and report nothing, which reads as a clean skill.
+                return Err(LoadError::SelfTest(
+                    "AGT-CAP-001 declares no tool_capabilities table".to_owned(),
+                ));
+            }
             rules.insert(rule.spec.id.clone(), rule);
         }
         let hidden = rules
@@ -412,6 +423,20 @@ impl RuleSet {
     fn is_hidden(&self, ch: char) -> bool {
         let at = self.hidden.partition_point(|&(_, high)| high < ch);
         self.hidden.get(at).is_some_and(|&(low, _)| low <= ch)
+    }
+
+    /// The capability `tool` grants, from `AGT-CAP-001`'s table. A
+    /// parenthesised specifier narrows a tool and still grants its
+    /// capability (spec 10.5).
+    #[must_use]
+    pub fn tool_capability(&self, tool: &str) -> Option<&str> {
+        let name = tool.split_once('(').map_or(tool, |(name, _)| name);
+        self.rules
+            .get("AGT-CAP-001")?
+            .spec
+            .tool_capabilities
+            .get(name)
+            .map(String::as_str)
     }
 
     /// Number of loaded rules.

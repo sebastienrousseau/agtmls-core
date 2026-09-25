@@ -23,6 +23,7 @@
 
 pub mod advisories;
 pub mod analyzer;
+pub mod attestations;
 pub mod digest;
 pub mod lockfile;
 pub mod rules;
