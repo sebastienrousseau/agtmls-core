@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use agtmls_core::advisories::{self, Revocation};
+use agtmls_core::signatures::{self, Status};
 use agtmls_core::{Analyzer, Problem, RuleSet, digest, lockfile, skill};
 
 fn usage() -> ExitCode {
@@ -16,7 +18,12 @@ fn usage() -> ExitCode {
          agtmls-rs digest <skill-dir>\n  \
          agtmls-rs audit  <path> --rules <dir> [--json] [--pedantic]\n  \
          agtmls-rs manifest <skill-dir> [--json]\n  \
-         agtmls-rs verify <target> --agent <claude|codex|aider> [--json]"
+         agtmls-rs verify <target> --agent <claude|codex|aider> [--json]\n    \
+                          [--registry <dir> [--signatures] [--allowed-signers <file>]]\n  \
+         agtmls-rs signature <file> --sig <file> --allowed-signers <file> --namespace <ns>\n    \
+                          [--verify-time YYYYMMDD] [--json]\n  \
+         agtmls-rs advisories <feed> --allowed-signers <file> --lockfile <file>\n    \
+                          [--sig <file>] [--verify-time YYYYMMDD] [--json]"
     );
     ExitCode::from(2)
 }
@@ -72,13 +79,24 @@ fn main() -> ExitCode {
         },
         ("audit", Some(path)) => audit(&path, rules_dir.as_deref(), json, pedantic),
         ("verify", Some(path)) => {
-            let agent = args
-                .iter()
-                .position(|a| a == "--agent")
-                .and_then(|i| args.get(i + 1))
-                .map_or("claude", String::as_str);
-            verify(&path, agent, json)
+            let require_signed = args.iter().any(|a| a == "--signatures");
+            let registry = option(&args, "--registry")
+                .map(|dir| Registry::new(Path::new(dir), option(&args, "--allowed-signers")));
+            if require_signed && registry.is_none() {
+                eprintln!("error: --signatures needs --registry <dir>");
+                return ExitCode::from(2);
+            }
+            let options = VerifyOptions {
+                agent: option(&args, "--agent").unwrap_or("claude"),
+                json,
+                require_signed,
+                registry,
+                verify_time: option(&args, "--verify-time"),
+            };
+            verify(&path, &options)
         }
+        ("signature", Some(path)) => signature_command(&path, &args, json),
+        ("advisories", Some(path)) => advisories_command(&path, &args, json),
         _ => usage(),
     }
 }
@@ -86,9 +104,133 @@ fn main() -> ExitCode {
 /// Exit code 3: the install cannot be trusted. Distinct from 1 (error) and
 /// 2 (usage) so a calling script can branch on it.
 const EXIT_INTEGRITY_FAILURE: u8 = 3;
+/// Exit codes of agtmls-spec 9.5: nobody signed this, someone signed
+/// something else, and a verified source names a revoked digest.
+const EXIT_UNSIGNED: u8 = 4;
+const EXIT_BAD_SIGNATURE: u8 = 5;
+const EXIT_REVOKED: u8 = 6;
 
-fn verify(target: &Path, agent: &str, json: bool) -> ExitCode {
-    let dot = match agent {
+/// The value after `flag`, if present.
+fn option<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+}
+
+/// Where a registry keeps what `verify` judges an install by.
+struct Registry {
+    index: PathBuf,
+    feed: PathBuf,
+    allowed_signers: PathBuf,
+}
+
+impl Registry {
+    fn new(dir: &Path, allowed_signers: Option<&str>) -> Self {
+        Self {
+            index: dir.join("index.json"),
+            feed: dir.join("advisories.json"),
+            allowed_signers: allowed_signers
+                .map_or_else(|| dir.join("ALLOWED_SIGNERS"), PathBuf::from),
+        }
+    }
+}
+
+fn sig_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".sig");
+    PathBuf::from(name)
+}
+
+/// agtmls-spec 11.4: when several failures apply, the exit code is the
+/// first of these. A source that does not verify supports no conclusion,
+/// then what is installed is not what was published, then it is revoked,
+/// then a required signature is absent.
+const PRECEDENCE: [u8; 4] = [
+    EXIT_BAD_SIGNATURE,
+    EXIT_INTEGRITY_FAILURE,
+    EXIT_REVOKED,
+    EXIT_UNSIGNED,
+];
+
+/// The exit code for the failures that apply, `0` for none.
+fn exit_code(failures: &[(u8, bool)]) -> u8 {
+    PRECEDENCE
+        .into_iter()
+        .find(|code| failures.iter().any(|&(c, applies)| c == *code && applies))
+        .unwrap_or(0)
+}
+
+/// A verified feed's revocations, or none: an unverified feed is never
+/// consulted (spec 11.3).
+fn feed_revocations<'a>(
+    feed: &Path,
+    status: Status,
+    installed: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<Vec<Revocation>, String> {
+    if status != Status::Verified {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(feed)
+        .map_err(|e| format!("{} could not be read: {e}", feed.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("{} is not valid JSON: {e}", feed.display()))?;
+    Ok(advisories::revoked(&value, installed))
+}
+
+struct VerifyOptions<'a> {
+    agent: &'a str,
+    json: bool,
+    require_signed: bool,
+    registry: Option<Registry>,
+    verify_time: Option<&'a str>,
+}
+
+/// The index signature, the feed signature and a verified feed's revocations.
+type Judged = (Option<Status>, Option<Status>, Vec<Revocation>);
+
+/// The index signature (when required), the feed's signature (when a feed
+/// ships) and the revocations a verified feed names.
+fn judge_registry(
+    target: &Path,
+    registry: &Registry,
+    options: &VerifyOptions<'_>,
+) -> Result<Judged, String> {
+    let check = |data: &Path, namespace: &str| {
+        signatures::verify(
+            data,
+            &sig_path(data),
+            &registry.allowed_signers,
+            namespace,
+            signatures::PRINCIPAL,
+            options.verify_time,
+        )
+        .map_err(|e| e.to_string())
+    };
+    let index = if options.require_signed {
+        Some(check(&registry.index, signatures::INDEX_NAMESPACE)?)
+    } else {
+        None
+    };
+    if !registry.feed.is_file() {
+        return Ok((index, None, Vec::new()));
+    }
+    let feed = check(&registry.feed, signatures::ADVISORY_NAMESPACE)?;
+    let hits = match lockfile::read(target) {
+        Ok(lock) => feed_revocations(
+            &registry.feed,
+            feed,
+            lock.skills
+                .iter()
+                .map(|s| (s.name.as_str(), s.integrity.as_str())),
+        )?,
+        Err(_) => Vec::new(),
+    };
+    Ok((index, Some(feed), hits))
+}
+
+fn verify(target: &Path, options: &VerifyOptions<'_>) -> ExitCode {
+    let dot = match options.agent {
         "claude" => ".claude",
         "codex" => ".codex",
         "aider" => ".aider",
@@ -104,44 +246,225 @@ fn verify(target: &Path, agent: &str, json: bool) -> ExitCode {
             return ExitCode::from(EXIT_INTEGRITY_FAILURE);
         }
     };
+    let judged = match &options.registry {
+        None => Ok((None, None, Vec::new())),
+        Some(registry) => judge_registry(target, registry, options),
+    };
+    let (index_status, feed_status, hits) = match judged {
+        Ok(judged) => judged,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut notes = Vec::new();
+    if feed_status == Some(Status::Unsigned) {
+        notes.push("advisories.json is not signed; not consulted".to_owned());
+    }
+    let statuses = [index_status, feed_status];
+    let integrity = problems.iter().any(Problem::is_integrity_failure);
+    let code = exit_code(&[
+        (
+            EXIT_BAD_SIGNATURE,
+            statuses.contains(&Some(Status::BadSignature)),
+        ),
+        (EXIT_INTEGRITY_FAILURE, integrity),
+        (EXIT_REVOKED, !hits.is_empty()),
+        (
+            EXIT_UNSIGNED,
+            options.require_signed && statuses.contains(&Some(Status::Unsigned)),
+        ),
+    ]);
+    let label =
+        |status: Option<Status>, absent: &'static str| status.map_or(absent, Status::as_str);
 
-    if json {
+    if options.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "target": target.display().to_string(),
-                "ok": problems.is_empty(),
+                "ok": code == 0,
                 "problems": problems,
+                "index_signature": label(index_status, "not checked"),
+                "advisory_feed": label(feed_status, "absent"),
+                "revoked": hits,
+                "notes": notes,
             }))
             .unwrap_or_default()
         );
-    } else if problems.is_empty() {
-        println!("OK: installed tree matches the lockfile");
-    } else {
-        for problem in &problems {
-            match problem {
-                Problem::Modified {
-                    name,
-                    expected,
-                    actual,
-                } => {
-                    eprintln!("MODIFIED     {name}  expected {expected}, found {actual}");
-                }
-                Problem::Missing { name } => {
-                    eprintln!("MISSING      {name}  recorded in the lockfile but not installed");
-                }
-                Problem::Unmanaged { name } => {
-                    eprintln!("UNMANAGED    {name}  installed but not in the lockfile");
-                }
+        return ExitCode::from(code);
+    }
+    print_report(
+        &problems,
+        &hits,
+        &notes,
+        [index_status, feed_status],
+        !integrity && code == 0,
+    );
+    ExitCode::from(code)
+}
+
+/// The human-readable form of a verification.
+fn print_report(
+    problems: &[Problem],
+    hits: &[Revocation],
+    notes: &[String],
+    [index_status, feed_status]: [Option<Status>; 2],
+    clean: bool,
+) {
+    for problem in problems {
+        match problem {
+            Problem::Modified {
+                name,
+                expected,
+                actual,
+            } => {
+                eprintln!("MODIFIED     {name}  expected {expected}, found {actual}");
+            }
+            Problem::Missing { name } => {
+                eprintln!("MISSING      {name}  recorded in the lockfile but not installed");
+            }
+            Problem::Unmanaged { name } => {
+                eprintln!("UNMANAGED    {name}  installed but not in the lockfile");
             }
         }
     }
-
-    if problems.iter().any(Problem::is_integrity_failure) {
-        ExitCode::from(EXIT_INTEGRITY_FAILURE)
-    } else {
-        ExitCode::SUCCESS
+    for hit in hits {
+        eprintln!(
+            "REVOKED      {}  {} by {}",
+            hit.skill,
+            hit.digest,
+            hit.advisories.join(", ")
+        );
     }
+    for note in notes {
+        eprintln!("note: {note}");
+    }
+    match index_status {
+        Some(Status::Verified) => println!("OK: index.json signature verified"),
+        Some(Status::BadSignature) => {
+            eprintln!("BAD_SIGNATURE index.json.sig does not verify against ALLOWED_SIGNERS");
+        }
+        Some(Status::Unsigned) => {
+            eprintln!("UNSIGNED     index.json has no signature, or there is no ALLOWED_SIGNERS");
+        }
+        None => {}
+    }
+    if feed_status == Some(Status::BadSignature) {
+        eprintln!("BAD_SIGNATURE advisories.json.sig does not verify; the feed is not consulted");
+    }
+    if clean {
+        println!("OK: installed tree matches the lockfile");
+    }
+}
+
+/// `signature <data>`: one verification, for the conformance runner.
+fn signature_command(data: &Path, args: &[String], json: bool) -> ExitCode {
+    let (Some(sig), Some(allowed), Some(namespace)) = (
+        option(args, "--sig"),
+        option(args, "--allowed-signers"),
+        option(args, "--namespace"),
+    ) else {
+        eprintln!("error: signature needs --sig, --allowed-signers and --namespace");
+        return ExitCode::from(2);
+    };
+    match signatures::verify(
+        data,
+        Path::new(sig),
+        Path::new(allowed),
+        namespace,
+        signatures::PRINCIPAL,
+        option(args, "--verify-time"),
+    ) {
+        Ok(status) => {
+            if json {
+                println!("{}", serde_json::json!({"status": status.as_str()}));
+            } else {
+                println!("{}", status.as_str());
+            }
+            ExitCode::from(match status {
+                Status::Verified => 0,
+                Status::BadSignature => EXIT_BAD_SIGNATURE,
+                Status::Unsigned => EXIT_UNSIGNED,
+            })
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `advisories <feed>`: a feed judged against a lockfile, for the
+/// conformance runner. Exit `5`, `6` or `4` as spec 11.4 orders them.
+fn advisories_command(feed: &Path, args: &[String], json: bool) -> ExitCode {
+    let (Some(allowed), Some(lock_path)) = (
+        option(args, "--allowed-signers"),
+        option(args, "--lockfile"),
+    ) else {
+        eprintln!("error: advisories needs --allowed-signers and --lockfile");
+        return ExitCode::from(2);
+    };
+    let sig = option(args, "--sig").map_or_else(|| sig_path(feed), PathBuf::from);
+    let status = match signatures::verify(
+        feed,
+        &sig,
+        Path::new(allowed),
+        signatures::ADVISORY_NAMESPACE,
+        signatures::PRINCIPAL,
+        option(args, "--verify-time"),
+    ) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let lock: serde_json::Value = match std::fs::read_to_string(lock_path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
+    {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("error: {lock_path}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let installed = lock
+        .get("skills")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|s| Some((s.get("name")?.as_str()?, s.get("integrity")?.as_str()?)));
+    let hits = match feed_revocations(feed, status, installed) {
+        Ok(hits) => hits,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let code = exit_code(&[
+        (EXIT_BAD_SIGNATURE, status == Status::BadSignature),
+        (EXIT_REVOKED, !hits.is_empty()),
+        (EXIT_UNSIGNED, status == Status::Unsigned),
+    ]);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"advisory_feed": status.as_str(), "revoked": hits})
+        );
+    } else {
+        println!("{}", status.as_str());
+        for hit in &hits {
+            println!(
+                "REVOKED {}  {} by {}",
+                hit.skill,
+                hit.digest,
+                hit.advisories.join(", ")
+            );
+        }
+    }
+    ExitCode::from(code)
 }
 
 /// Load a skill directory's files into memory for structural analysis.
