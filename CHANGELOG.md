@@ -9,8 +9,29 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## Unreleased
 
+### Fixed
+
+- `AGT-CAP-001` read `allowed-tools` split on commas only, so the Agent
+  Skills spelling `allowed-tools: "Read Grep Bash"` was one tool that
+  granted nothing, and `Bash(git log:*)` matched no tool. Tools now split
+  on whitespace and commas with a specifier kept with its tool, and a
+  specifier still grants its tool's capability (agtmls-spec 10.5), as in
+  agtmls.
+
+### Changed
+
+- The tool-to-capability table is read from `AGT-CAP-001`'s
+  `[tool_capabilities]` in the rule data instead of a copy kept here; a
+  rule set whose `AGT-CAP-001` lacks it does not load. `audit_skill` now
+  takes the `RuleSet`.
+
 ### Added
 
+- Per-skill attestations (agtmls-spec chapter 10): `attestations` renders
+  the manifest and capabilities in-toto statements canonically, and
+  `agtmls-rs attest <manifest|capabilities> <dir> --name --rules
+  [--digest]` prints one. `cargo test` rebuilds every attestation vector
+  from its inputs and compares it byte for byte.
 - `*.json` files are escape-decoded before normalised matching (agtmls-spec
   4.3): `decode_json_escapes`, with escaped whitespace as a space so line
   numbers survive and surrogates combined or replaced with U+FFFD.

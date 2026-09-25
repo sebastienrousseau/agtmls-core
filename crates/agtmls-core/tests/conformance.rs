@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use std::collections::BTreeMap;
 
-use agtmls_core::{Analyzer, RuleSet, digest, skill};
+use agtmls_core::{Analyzer, RuleSet, attestations, digest, skill};
 use serde_json::Value;
 
 fn walkdir_count(root: &Path) -> usize {
@@ -213,7 +213,7 @@ fn security_corpus_detections_match() {
         for (relative, content) in &files {
             findings.extend(analyzer.audit_str(relative, content));
         }
-        findings.extend(skill::audit_skill(&files));
+        findings.extend(skill::audit_skill(&rules, &files));
 
         for want in case["must_detect"].as_array().into_iter().flatten() {
             detections += 1;
@@ -306,4 +306,58 @@ fn single_file_audit_covers_per_document_rules() {
             .is_empty(),
         "false positive on benign content"
     );
+}
+
+/// spec 10.8: every attestation vector, rebuilt from its inputs, byte for byte.
+#[test]
+fn attestation_vectors_match_the_specification() {
+    let spec = spec_dir();
+    let rules = RuleSet::load(&spec.join("rules")).expect("load rules");
+    let dir = spec.join("corpus/attestations");
+    let inputs: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("inputs.json")).expect("inputs"))
+            .expect("inputs are JSON");
+    let digest_cases: Value = serde_json::from_str(
+        &std::fs::read_to_string(spec.join("corpus/digest/cases.json")).expect("digest cases"),
+    )
+    .expect("digest cases are JSON");
+    let tmp = std::env::temp_dir().join(format!("agtmls-attest-{}", std::process::id()));
+    let mut checked = 0usize;
+    for entry in inputs["manifests"].as_array().expect("manifests") {
+        let vector = entry["vector"].as_str().expect("vector");
+        let case = digest_cases["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .find(|c| c["name"] == entry["digest_case"])
+            .expect("digest case");
+        let root = tmp.join(vector);
+        materialise(case, &root);
+        let got = attestations::render(
+            &attestations::manifest_statement(entry["skill"].as_str().expect("skill"), &root)
+                .expect("manifest"),
+        );
+        let want = std::fs::read_to_string(dir.join(vector)).expect("vector");
+        assert_eq!(got, want, "{vector}");
+        checked += 1;
+    }
+    for entry in inputs["capabilities"].as_array().expect("capabilities") {
+        let vector = entry["vector"].as_str().expect("vector");
+        let root = tmp.join(vector);
+        materialise(entry, &root);
+        let got = attestations::render(
+            &attestations::capabilities_statement(
+                &rules,
+                entry["skill"].as_str().expect("skill"),
+                &root,
+                entry["digest"].as_str(),
+            )
+            .expect("capabilities"),
+        );
+        let want = std::fs::read_to_string(dir.join(vector)).expect("vector");
+        assert_eq!(got, want, "{vector}");
+        checked += 1;
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(checked >= 4, "only {checked} attestation vectors");
 }

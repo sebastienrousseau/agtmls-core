@@ -17,21 +17,6 @@ use std::collections::BTreeMap;
 use crate::analyzer::Finding;
 use crate::rules::{EmojiContext, RuleSet, Severity};
 
-/// Tools that grant a capability a `safety_policy` may be denying.
-///
-/// The runtime honours the frontmatter, so frontmatter granting what the
-/// policy denies is an escalation, not a documentation error.
-const TOOL_CAPABILITIES: &[(&str, &str)] = &[
-    ("Bash", "executes_commands"),
-    ("BashOutput", "executes_commands"),
-    ("KillShell", "executes_commands"),
-    ("Write", "writes_files"),
-    ("Edit", "writes_files"),
-    ("NotebookEdit", "writes_files"),
-    ("WebFetch", "network_access"),
-    ("WebSearch", "network_access"),
-];
-
 fn finding(
     file: &str,
     line: usize,
@@ -169,7 +154,14 @@ pub fn check_invisible_with(
     findings
 }
 
-/// Tools granted by `SKILL.md` frontmatter, if any.
+/// Tools granted by `SKILL.md` frontmatter, if any (spec 10.5).
+///
+/// The Agent Skills spec writes the field space-separated
+/// (`allowed-tools: "Read Grep Bash"`), so it is split on whitespace and
+/// commas, YAML list brackets and quotes dropped, and a parenthesised
+/// specifier such as `Bash(git log:*)` kept with its tool. Splitting on commas
+/// alone read that example as one tool named `Read Grep Bash`, which granted
+/// nothing.
 #[must_use]
 pub fn frontmatter_tools(skill_md: &str) -> Vec<String> {
     let Some(block) = frontmatter(skill_md) else {
@@ -178,16 +170,30 @@ pub fn frontmatter_tools(skill_md: &str) -> Vec<String> {
     block
         .lines()
         .find_map(|line| line.strip_prefix("allowed-tools:"))
-        .map(|value| {
-            value
-                .trim()
-                .trim_matches(['[', ']'])
-                .split(',')
-                .map(|tool| tool.trim().trim_matches(['\'', '"']).to_owned())
-                .filter(|tool| !tool.is_empty())
-                .collect()
-        })
+        .map(tool_tokens)
         .unwrap_or_default()
+}
+
+/// A run of characters that are not whitespace, a comma, a bracket, a quote
+/// or a parenthesis, optionally followed by one parenthesised specifier.
+fn tool_tokens(value: &str) -> Vec<String> {
+    let separator =
+        |c: char| c.is_whitespace() || matches!(c, ',' | '(' | ')' | '\'' | '"' | '[' | ']');
+    let mut tools = Vec::new();
+    let mut rest = value;
+    while let Some(start) = rest.find(|c: char| !separator(c)) {
+        rest = &rest[start..];
+        let end = rest.find(separator).unwrap_or(rest.len());
+        let mut token_end = end;
+        if rest[end..].starts_with('(') {
+            if let Some(close) = rest[end..].find(')') {
+                token_end = end + close + 1;
+            }
+        }
+        tools.push(rest[..token_end].to_owned());
+        rest = &rest[token_end..];
+    }
+    tools
 }
 
 fn frontmatter(text: &str) -> Option<&str> {
@@ -257,38 +263,63 @@ fn load_policy(files: &SkillFiles) -> (serde_json::Value, Vec<Finding>) {
     }
 }
 
-/// `AGT-CAP-001`: frontmatter must not grant what the policy denies.
-fn check_capability_escalation(skill_md: &str, policy: &serde_json::Value) -> Vec<Finding> {
+/// Whether `policy` grants `capability`: `network_access` by `optional` or
+/// `required`, the others by `true` (spec 10.5).
+#[must_use]
+pub fn policy_grants(policy: &serde_json::Value, capability: &str) -> bool {
+    if capability == "network_access" {
+        matches!(
+            policy
+                .get("network_access")
+                .and_then(serde_json::Value::as_str),
+            Some("optional" | "required")
+        )
+    } else {
+        policy
+            .get(capability)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+}
+
+/// Each granted tool whose capability the policy denies, in frontmatter
+/// order: the `AGT-CAP-001` judgement, shared with the capabilities
+/// attestation (spec 10.5).
+#[must_use]
+pub fn escalations(
+    rules: &RuleSet,
+    skill_md: &str,
+    policy: &serde_json::Value,
+) -> Vec<(String, String)> {
     frontmatter_tools(skill_md)
         .into_iter()
         .filter_map(|tool| {
-            let (_, capability) = TOOL_CAPABILITIES.iter().find(|(name, _)| *name == tool)?;
-            let granted = if *capability == "network_access" {
-                matches!(
-                    policy
-                        .get("network_access")
-                        .and_then(serde_json::Value::as_str),
-                    Some("optional" | "required")
-                )
-            } else {
-                policy
-                    .get(*capability)
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-            };
-            (!granted).then(|| {
-                finding(
-                    "SKILL.md",
-                    1,
-                    Severity::High,
-                    "capability_escalation",
-                    "AGT-CAP-001",
-                    format!(
-                        "Frontmatter grants '{tool}' but safety_policy denies {capability}; \
-                         the runtime honours the frontmatter"
-                    ),
-                )
-            })
+            let capability = rules.tool_capability(&tool)?.to_owned();
+            (!policy_grants(policy, &capability)).then_some((tool, capability))
+        })
+        .collect()
+}
+
+/// `AGT-CAP-001`: frontmatter must not grant what the policy denies.
+fn check_capability_escalation(
+    rules: &RuleSet,
+    skill_md: &str,
+    policy: &serde_json::Value,
+) -> Vec<Finding> {
+    escalations(rules, skill_md, policy)
+        .into_iter()
+        .map(|(tool, capability)| {
+            finding(
+                "SKILL.md",
+                1,
+                Severity::High,
+                "capability_escalation",
+                "AGT-CAP-001",
+                format!(
+                    "Frontmatter grants '{tool}' but safety_policy denies {capability}; \
+                     the runtime honours the frontmatter"
+                ),
+            )
         })
         .collect()
 }
@@ -349,7 +380,7 @@ fn check_policy_prose(skill_md: &str, policy: &serde_json::Value) -> Vec<Finding
 /// is declared at all, and whether the frontmatter grants more than the policy
 /// admits, are not properties of any single document.
 #[must_use]
-pub fn audit_skill(files: &SkillFiles) -> Vec<Finding> {
+pub fn audit_skill(rules: &RuleSet, files: &SkillFiles) -> Vec<Finding> {
     // check_invisible is per-document and now lives in Analyzer::audit_str, so
     // every caller gets it whether or not it is auditing a whole skill.
     let mut findings = Vec::new();
@@ -359,7 +390,7 @@ pub fn audit_skill(files: &SkillFiles) -> Vec<Finding> {
 
     let (policy, policy_findings) = load_policy(files);
     findings.extend(policy_findings);
-    findings.extend(check_capability_escalation(skill_md, &policy));
+    findings.extend(check_capability_escalation(rules, skill_md, &policy));
     findings.extend(check_policy_prose(skill_md, &policy));
     findings
 }
@@ -513,5 +544,89 @@ code_point_ranges = [ { from = "U+FE00", to = "U+FE0F", name = "Variation select
                 .iter()
                 .all(|(r, s)| r == "AGT-STEG-001" && s == "CRITICAL")
         );
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::{SkillFiles, audit_skill, frontmatter_tools};
+    use crate::rules::RuleSet;
+
+    const CAP: &str = r#"
+id = "AGT-CAP-001"
+category = "capability_escalation"
+severity = "high"
+title = "Frontmatter grants a denied capability"
+kind = "structural"
+scope = "raw"
+[tool_capabilities]
+Bash = "executes_commands"
+WebFetch = "network_access"
+"#;
+
+    fn skill(tools: &str, policy: &str) -> SkillFiles {
+        let mut files = SkillFiles::new();
+        files.insert(
+            "SKILL.md".to_owned(),
+            format!(
+                "---\nname: s\ndescription: Use when testing.\nallowed-tools: {tools}\n---\n\n# S\n"
+            ),
+        );
+        files.insert(
+            "metadata.json".to_owned(),
+            format!("{{\"safety_policy\": {policy}}}"),
+        );
+        files
+    }
+
+    fn escalated(tools: &str, policy: &str) -> Vec<String> {
+        let rules = RuleSet::from_sources([("AGT-CAP-001", CAP)]).expect("rule loads");
+        audit_skill(&rules, &skill(tools, policy))
+            .into_iter()
+            .filter(|f| f.rule == "AGT-CAP-001")
+            .map(|f| f.message)
+            .collect()
+    }
+
+    #[test]
+    fn tools_split_on_whitespace_and_commas_keeping_specifiers() {
+        let md = |v: &str| format!("---\nname: s\nallowed-tools: {v}\n---\n");
+        assert_eq!(
+            frontmatter_tools(&md("\"Read Grep Bash\"")),
+            ["Read", "Grep", "Bash"]
+        );
+        assert_eq!(frontmatter_tools(&md("[Read, 'Write']")), ["Read", "Write"]);
+        assert_eq!(
+            frontmatter_tools(&md("\"Read Bash(git log:*) WebFetch\"")),
+            ["Read", "Bash(git log:*)", "WebFetch"]
+        );
+        assert!(frontmatter_tools("no frontmatter").is_empty());
+    }
+
+    #[test]
+    fn a_space_separated_grant_escalates() {
+        let found = escalated("\"Read Grep Bash\"", r#"{"executes_commands": false}"#);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].contains("'Bash'"));
+    }
+
+    #[test]
+    fn a_specifier_narrows_a_tool_and_still_grants_it() {
+        assert_eq!(
+            escalated("\"Bash(git log:*)\"", r#"{"executes_commands": false}"#).len(),
+            1
+        );
+        assert!(escalated("\"Bash(git log:*)\"", r#"{"executes_commands": true}"#).is_empty());
+        assert!(escalated("WebFetch", r#"{"network_access": "optional"}"#).is_empty());
+        assert_eq!(
+            escalated("WebFetch", r#"{"network_access": "none"}"#).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_capability_rule_without_its_table_does_not_load() {
+        let bare = CAP.split("[tool_capabilities]").next().expect("head");
+        assert!(RuleSet::from_sources([("AGT-CAP-001", bare)]).is_err());
     }
 }
