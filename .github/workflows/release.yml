@@ -66,12 +66,29 @@ jobs:
           cargo test --workspace --all-features
           cargo build --release -p agtmls-cli
           .spec/conformance/run.py --python .agtmls --rust target/release/agtmls-rs
+          .spec/conformance/run.py --python .agtmls --rust target/release/agtmls-rs --json > conformance-report.json
 
+      # The computed level is the highest one the runner reports with every
+      # lower level also clean. It used to be written here as a literal, which
+      # would have refused a correct higher claim and accepted a stale one.
       - name: The claimed conformance level must be the computed one
         run: |
+          COMPUTED=$(python3 - <<'PY'
+          import json
+          levels = json.load(open("conformance-report.json"))["levels"]
+          computed = "L1"
+          for name in ("L2", "L3", "L4", "L5"):
+              level = next((v for k, v in levels.items() if k.startswith(name + "-")), None)
+              if level is None or level["failures"] or level["passed"] != level["total"]:
+                  break
+              computed = name
+          print(computed)
+          PY
+          )
           CLAIMED=$(python3 -c 'import json;print(json.load(open("conformance.json"))["claimed_level"])')
-          test "$CLAIMED" = "L4" || {
-            echo "::error::conformance.json claims $CLAIMED; the runner verifies L4"
+          IN_CODE=$(sed -n 's/^pub const CONFORMANCE_LEVEL: &str = "\(L[0-9]\)";$/\1/p' crates/agtmls-core/src/lib.rs)
+          test "$CLAIMED" = "$COMPUTED" && test "$IN_CODE" = "$COMPUTED" || {
+            echo "::error::conformance.json claims $CLAIMED and lib.rs $IN_CODE; the runner computes $COMPUTED"
             exit 1
           }
           echo "conformance level $CLAIMED verified"

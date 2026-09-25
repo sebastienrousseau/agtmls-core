@@ -9,6 +9,13 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## Unreleased
 
+### Changed
+
+- Claims conformance level L5 (Trust) in `conformance.json` and
+  `CONFORMANCE_LEVEL`. The release gate now computes the level from the
+  runner's report instead of comparing against a literal `L4`, which
+  would have refused a correct higher claim and accepted a stale one.
+
 ### Fixed
 
 - `AGT-CAP-001` read `allowed-tools` split on commas only, so the Agent

@@ -109,17 +109,17 @@ The test suite **fails rather than skips** when the spec cannot be found. A
 conformance suite that skips reports green while proving nothing, which is
 worse than having none.
 
-Claimed level: **L4 (Registry)**.
+Claimed level: **L5 (Trust)**.
 
 | Level | Evidence |
 | :--- | :--- |
 | L2 | All 14 digest vectors, plus all 31 skills in the `agtmls` registry digesting identically under both implementations |
 | L3 | Every security corpus case, including evasion variants, producing an **identical rule set** in both implementations |
 | L4 | Lockfile verification agreeing with `agtmls` case by case |
+| L5 | Every signature, advisory and attestation vector of chapters 9 to 11, verdicts and exit codes agreeing with `agtmls` and attestations byte for byte |
 
-The signature and advisory vectors of chapters 9 and 11 are replayed by
-`cargo test`; they join the runner's levels once those chapters are
-normative.
+`cargo test` also replays the chapter 9 to 11 vectors on its own, so a
+regression fails here before it reaches the runner.
 
 The runner recomputes the level, and a claim above the computed level fails
 the build. This crate briefly claimed L3 before the structural rules were

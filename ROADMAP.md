@@ -5,9 +5,11 @@
 
 ## Now
 
-L4 (Registry), verified by the conformance runner rather than claimed:
-digest vectors, the full security corpus including evasions, and lockfile
-verification agreeing with the Python implementation on a tampered install.
+L5 (Trust), verified by the conformance runner rather than claimed:
+digest vectors, the full security corpus including evasions, lockfile
+verification agreeing with the Python implementation on a tampered install,
+and index signatures, advisories and attestations (agtmls-spec chapters 9
+to 11).
 
 ## Next
 
