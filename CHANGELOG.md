@@ -11,6 +11,12 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ### Added
 
+- Normalised matching strips every code point `AGT-STEG-001` declares
+  and applies NFKC before collapsing whitespace (agtmls-spec 4.3), as
+  agtmls already does: a keyword split by a zero-width space or a tag
+  character, or spelt in fullwidth letters, is matched, on its source
+  line. `RuleSet::fold` does both and borrows ASCII unchanged. New
+  dependency: `unicode-normalization` (MIT OR Apache-2.0).
 - `*.json` files are escape-decoded before normalised matching (agtmls-spec
   4.3): `decode_json_escapes`, with escaped whitespace as a space so line
   numbers survive and surrogates combined or replaced with U+FFFD.
