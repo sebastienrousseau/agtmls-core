@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use std::collections::BTreeMap;
 
-use agtmls_core::{Analyzer, RuleSet, digest, skill};
+use agtmls_core::signatures::{self, Status};
+use agtmls_core::{Analyzer, RuleSet, advisories, digest, skill};
 use serde_json::Value;
 
 fn walkdir_count(root: &Path) -> usize {
@@ -306,4 +307,105 @@ fn single_file_audit_covers_per_document_rules() {
             .is_empty(),
         "false positive on benign content"
     );
+}
+
+fn status_of(verdict: Status) -> &'static str {
+    verdict.as_str()
+}
+
+/// spec 9.6: every signature vector, judged at its own verify time.
+#[test]
+fn signature_vectors_match_the_specification() {
+    let dir = spec_dir().join("corpus/signatures");
+    let cases: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("cases.json")).expect("signature cases"),
+    )
+    .expect("cases are JSON");
+    let namespace = cases["namespace"].as_str().expect("namespace");
+    let principal = cases["principal"].as_str().expect("principal");
+    let allowed = dir.join(cases["allowed_signers"].as_str().expect("allowed_signers"));
+    let list = cases["cases"].as_array().expect("cases");
+    assert!(!list.is_empty(), "no signature vectors");
+    for case in list {
+        let name = case["name"].as_str().expect("name");
+        let signature = case["signature"]
+            .as_str()
+            .map_or_else(|| dir.join("absent.sig"), |s| dir.join(s));
+        let verdict = signatures::verify(
+            &dir.join(case["index"].as_str().expect("index")),
+            &signature,
+            &allowed,
+            namespace,
+            principal,
+            case["verify_time"].as_str(),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(status_of(verdict), case["expected"], "{name}");
+    }
+}
+
+/// spec 11.5: the feed's signature first, then revocation by digest only.
+#[test]
+fn advisory_vectors_match_the_specification() {
+    let dir = spec_dir().join("corpus/advisories");
+    let cases: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("cases.json")).expect("advisory cases"),
+    )
+    .expect("cases are JSON");
+    let feed_path = dir.join(cases["feed"].as_str().expect("feed"));
+    let feed: Value =
+        serde_json::from_str(&std::fs::read_to_string(&feed_path).expect("feed")).expect("feed");
+    let allowed = dir.join(cases["allowed_signers"].as_str().expect("allowed_signers"));
+    let list = cases["cases"].as_array().expect("cases");
+    assert!(!list.is_empty(), "no advisory vectors");
+    for case in list {
+        let name = case["name"].as_str().expect("name");
+        let signature = case["signature"]
+            .as_str()
+            .map_or_else(|| dir.join("absent.sig"), |s| dir.join(s));
+        let verdict = signatures::verify(
+            &feed_path,
+            &signature,
+            &allowed,
+            cases["namespace"].as_str().expect("namespace"),
+            cases["principal"].as_str().expect("principal"),
+            cases["verify_time"].as_str(),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let installed: Vec<(&str, &str)> = case["lockfile"]["skills"]
+            .as_array()
+            .expect("skills")
+            .iter()
+            .map(|s| {
+                (
+                    s["name"].as_str().expect("name"),
+                    s["integrity"].as_str().expect("integrity"),
+                )
+            })
+            .collect();
+        let hits = if verdict == Status::Verified {
+            advisories::revoked(&feed, installed)
+        } else {
+            Vec::new()
+        };
+        let outcome = match verdict {
+            Status::Verified if hits.is_empty() => "clean",
+            Status::Verified => "revoked",
+            other => status_of(other),
+        };
+        assert_eq!(outcome, case["expected"], "{name}");
+        let mut ids: Vec<&str> = hits
+            .iter()
+            .flat_map(|h| h.advisories.iter().map(String::as_str))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let expected: Vec<&str> = case["advisories"]
+            .as_array()
+            .expect("advisories")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(ids, expected, "{name}");
+    }
 }
