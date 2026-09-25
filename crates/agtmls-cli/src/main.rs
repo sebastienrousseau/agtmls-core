@@ -213,6 +213,10 @@ fn attest(kind: &Path, args: &[String], rules_dir: Option<&Path>) -> ExitCode {
         }
     };
     let dir = Path::new(dir);
+    if !dir.is_dir() {
+        eprintln!("error: {} is not a directory", dir.display());
+        return ExitCode::FAILURE;
+    }
     let statement = match kind.to_str() {
         Some("manifest") => attestations::manifest_statement(name, dir),
         Some("capabilities") => {
