@@ -34,6 +34,24 @@ pub struct Entry {
     /// a lost bit can be repaired without looking like tampering.
     #[serde(default)]
     pub executable_files: Vec<String>,
+    /// The native agents this entry was installed for (spec 6.2).
+    ///
+    /// One lockfile serves every agent installed in a target. `None` is an
+    /// entry written before the field existed, and counts for every agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<String>>,
+}
+
+impl Entry {
+    /// Whether this entry describes `agent`'s skills directory. `None` asks
+    /// about every agent.
+    #[must_use]
+    pub fn serves(&self, agent: Option<&str>) -> bool {
+        match (agent, &self.agents) {
+            (None, _) | (_, None) => true,
+            (Some(agent), Some(agents)) => agents.iter().any(|a| a == agent),
+        }
+    }
 }
 
 /// Where the install came from.
@@ -118,14 +136,22 @@ pub fn read(target: &Path) -> Result<Lockfile, String> {
 /// would destroy a local edit and would hide tampering behind the same
 /// behaviour.
 ///
+/// Only the entries that serve `agent` are compared (spec 6.3): another
+/// agent's record is not this directory's to answer for. `None` compares
+/// every entry.
+///
 /// # Errors
 /// Returns an error string if the lockfile cannot be read.
-pub fn verify(target: &Path, skills_dir: &Path) -> Result<Vec<Problem>, String> {
+pub fn verify(
+    target: &Path,
+    skills_dir: &Path,
+    agent: Option<&str>,
+) -> Result<Vec<Problem>, String> {
     let lock = read(target)?;
     let mut problems = Vec::new();
     let mut recorded: Vec<&str> = Vec::new();
 
-    for entry in &lock.skills {
+    for entry in lock.skills.iter().filter(|entry| entry.serves(agent)) {
         recorded.push(entry.name.as_str());
         let installed: PathBuf = skills_dir.join(&entry.path);
         if !installed.exists() {
@@ -165,4 +191,104 @@ pub fn verify(target: &Path, skills_dir: &Path) -> Result<Vec<Problem>, String> 
     }
 
     Ok(problems)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A target with one skill per agent directory and a lockfile describing
+    /// both, in a directory removed when the guard drops.
+    struct Target(PathBuf);
+
+    impl Drop for Target {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// (agent directories holding it, skill name, recorded `agents`).
+    type Placed<'a> = (&'a [&'a str], &'a str, Option<&'a [&'a str]>);
+
+    /// Each skill is written into every listed agent directory and recorded
+    /// once, with `agents` when given.
+    fn target(name: &str, skills: &[Placed<'_>]) -> Target {
+        let root = std::env::temp_dir().join(format!("agtmls-lock-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut entries = Vec::new();
+        for (agent_dirs, skill, agents) in skills {
+            let mut integrity = String::new();
+            for agent_dir in *agent_dirs {
+                let dir = root.join(agent_dir).join("skills").join(skill);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), format!("# {skill}\n")).unwrap();
+                integrity = skill_digest(&dir).unwrap();
+            }
+            let mut entry = json!({"name": skill, "integrity": integrity, "path": skill});
+            if let Some(agents) = agents {
+                entry["agents"] = json!(agents);
+            }
+            entries.push(entry);
+        }
+        std::fs::create_dir_all(root.join(".agtmls")).unwrap();
+        let lock = json!({
+            "schema_version": 1, "spec_version": "0.1.0", "installed_at": "2026-09-27T00:00:00Z",
+            "source": {"registry": "https://example.com", "registry_version": "0.0.0"},
+            "mode": "copy", "skills": entries,
+        });
+        std::fs::write(root.join(LOCKFILE_RELATIVE), lock.to_string()).unwrap();
+        Target(root)
+    }
+
+    #[test]
+    fn each_agent_is_verified_against_its_own_entries() {
+        let t = target(
+            "agents",
+            &[
+                (
+                    &[".claude", ".codex"],
+                    "general",
+                    Some(&["claude", "codex"]),
+                ),
+                (&[".codex"], "bundled", Some(&["codex"])),
+            ],
+        );
+        let claude = verify(&t.0, &t.0.join(".claude/skills"), Some("claude")).unwrap();
+        assert_eq!(
+            claude,
+            Vec::new(),
+            "codex's bundled skill was reported missing for claude"
+        );
+        let codex = verify(&t.0, &t.0.join(".codex/skills"), Some("codex")).unwrap();
+        assert_eq!(codex, Vec::new());
+    }
+
+    #[test]
+    fn an_entry_without_agents_counts_for_every_agent() {
+        let t = target("legacy", &[(&[".claude"], "general", None)]);
+        let codex = verify(&t.0, &t.0.join(".codex/skills"), Some("codex")).unwrap();
+        assert_eq!(
+            codex,
+            vec![Problem::Missing {
+                name: "general".into()
+            }]
+        );
+        let everyone = verify(&t.0, &t.0.join(".claude/skills"), None).unwrap();
+        assert_eq!(everyone, Vec::new());
+    }
+
+    #[test]
+    fn agents_are_written_back_only_when_recorded() {
+        let entry: Entry =
+            serde_json::from_value(json!({"name": "a", "integrity": "sha256:0", "path": "a"}))
+                .unwrap();
+        assert!(entry.serves(Some("claude")) && entry.serves(None));
+        assert!(!serde_json::to_string(&entry).unwrap().contains("agents"));
+        let entry: Entry = serde_json::from_value(
+            json!({"name": "a", "integrity": "sha256:0", "path": "a", "agents": ["codex"]}),
+        )
+        .unwrap();
+        assert!(!entry.serves(Some("claude")) && entry.serves(Some("codex")) && entry.serves(None));
+    }
 }
