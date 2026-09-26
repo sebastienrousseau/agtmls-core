@@ -242,7 +242,11 @@ fn verify(target: &Path, options: &VerifyOptions<'_>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let problems = match lockfile::verify(target, &target.join(dot).join("skills")) {
+    let problems = match lockfile::verify(
+        target,
+        &target.join(dot).join("skills"),
+        Some(options.agent),
+    ) {
         Ok(problems) => problems,
         Err(error) => {
             eprintln!("error: {error}");

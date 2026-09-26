@@ -9,6 +9,15 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## Unreleased
 
+### Fixed
+
+- `verify <target> --agent <agent>` compares only the lockfile entries that
+  serve that agent (agtmls-spec 6.2, `agents`). One lockfile serves every
+  agent in a target, and a second agent's bundle skills were reported
+  missing for the first. An entry without `agents` still serves every
+  agent. `lockfile::verify` takes the agent; `Entry` gains `agents` and
+  `serves`.
+
 ### Changed
 
 - Claims conformance level L5 (Trust) in `conformance.json` and
