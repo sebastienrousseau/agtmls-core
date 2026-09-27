@@ -11,6 +11,12 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ### Fixed
 
+- `verify <target> --agent antigravity` was refused as an unknown agent,
+  though the reference implementation installs Antigravity into
+  `.agents/skills`. The native agents and their skills directories are one
+  table, `lockfile::NATIVE_AGENTS` (with `lockfile::skills_dir`), mirroring
+  `providers.json`; the CLI reads it, and names the known agents when
+  refusing one.
 - `verify <target> --agent <agent>` compares only the lockfile entries that
   serve that agent (agtmls-spec 6.2, `agents`). One lockfile serves every
   agent in a target, and a second agent's bundle skills were reported
