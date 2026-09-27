@@ -18,6 +18,27 @@ use crate::digest::skill_digest;
 /// Where the lockfile lives inside an install target.
 pub const LOCKFILE_RELATIVE: &str = ".agtmls/manifest.json";
 
+/// Each native agent and the directory its skills live under, relative to
+/// the target. Mirrors `native_agents.*.skills_dir` in the reference
+/// implementation's `providers.json`; Antigravity reads the shared
+/// `.agents/` directory rather than one of its own.
+pub const NATIVE_AGENTS: &[(&str, &str)] = &[
+    ("aider", ".aider/skills"),
+    ("antigravity", ".agents/skills"),
+    ("claude", ".claude/skills"),
+    ("codex", ".codex/skills"),
+];
+
+/// The skills directory `agent` reads, relative to the target, or `None`
+/// for an agent this implementation does not know.
+#[must_use]
+pub fn skills_dir(agent: &str) -> Option<&'static str> {
+    NATIVE_AGENTS
+        .iter()
+        .find(|(name, _)| *name == agent)
+        .map(|(_, dir)| *dir)
+}
+
 /// One installed skill, as recorded at install time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -276,6 +297,15 @@ mod tests {
         );
         let everyone = verify(&t.0, &t.0.join(".claude/skills"), None).unwrap();
         assert_eq!(everyone, Vec::new());
+    }
+
+    #[test]
+    fn every_native_agent_has_a_skills_directory() {
+        assert_eq!(skills_dir("antigravity"), Some(".agents/skills"));
+        assert_eq!(skills_dir("claude"), Some(".claude/skills"));
+        assert_eq!(skills_dir("codex"), Some(".codex/skills"));
+        assert_eq!(skills_dir("aider"), Some(".aider/skills"));
+        assert_eq!(skills_dir("cursor"), None);
     }
 
     #[test]

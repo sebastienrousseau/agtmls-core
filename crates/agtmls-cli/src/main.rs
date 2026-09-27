@@ -20,7 +20,7 @@ fn usage() -> ExitCode {
          agtmls-rs manifest <skill-dir> [--json]\n  \
          agtmls-rs attest <manifest|capabilities> <skill-dir> --name <skill> --rules <dir>\n    \
                           [--digest sha256:<hex>]\n  \
-         agtmls-rs verify <target> --agent <claude|codex|aider> [--json]\n    \
+         agtmls-rs verify <target> --agent <claude|codex|antigravity|aider> [--json]\n    \
                           [--registry <dir> [--signatures] [--allowed-signers <file>]]\n  \
          agtmls-rs signature <file> --sig <file> --allowed-signers <file> --namespace <ns>\n    \
                           [--verify-time YYYYMMDD] [--json]\n  \
@@ -233,20 +233,19 @@ fn judge_registry(
 }
 
 fn verify(target: &Path, options: &VerifyOptions<'_>) -> ExitCode {
-    let dot = match options.agent {
-        "claude" => ".claude",
-        "codex" => ".codex",
-        "aider" => ".aider",
-        other => {
-            eprintln!("error: unknown agent {other:?}; expected claude, codex or aider");
-            return ExitCode::from(2);
-        }
+    let Some(skills) = lockfile::skills_dir(options.agent) else {
+        let known: Vec<&str> = lockfile::NATIVE_AGENTS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        eprintln!(
+            "error: unknown agent {:?}; expected one of {}",
+            options.agent,
+            known.join(", ")
+        );
+        return ExitCode::from(2);
     };
-    let problems = match lockfile::verify(
-        target,
-        &target.join(dot).join("skills"),
-        Some(options.agent),
-    ) {
+    let problems = match lockfile::verify(target, &target.join(skills), Some(options.agent)) {
         Ok(problems) => problems,
         Err(error) => {
             eprintln!("error: {error}");
