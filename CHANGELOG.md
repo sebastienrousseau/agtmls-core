@@ -9,6 +9,16 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## Unreleased
 
+### Changed
+
+- Every function is held to cognitive complexity 15 and 60 lines: both
+  clippy lints are denied, with the thresholds in `clippy.toml` (the
+  portfolio's hygiene ceilings). Seven functions over them were split:
+  `decode_json_escapes` (checked against the previous version on 300,000
+  generated inputs), `check_invisible_with`, and the CLI's `main`,
+  `verify`, `advisories` and `audit` commands, plus one conformance test.
+  Behaviour is unchanged.
+
 ### Fixed
 
 - `verify <target> --agent antigravity` was refused as an unknown agent,

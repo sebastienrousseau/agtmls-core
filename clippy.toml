@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Sebastien Rousseau
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+# The portfolio's complexity ceilings (~/Code/AGENTS.md section 0): cognitive
+# complexity 15 and 60 lines per function. Both lints are denied in
+# Cargo.toml, so a function over either fails `cargo clippy` in CI.
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 60
