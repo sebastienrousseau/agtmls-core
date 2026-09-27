@@ -30,6 +30,66 @@ fn usage() -> ExitCode {
     ExitCode::from(2)
 }
 
+/// `digest <skill-dir>`: the skill's content address (spec 3).
+fn digest_command(path: &Path) -> ExitCode {
+    match digest::skill_digest(path) {
+        Ok(value) => {
+            println!("{value}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `manifest <skill-dir>`: every file and its SHA-256, as text or JSON.
+fn manifest_command(path: &Path, json: bool) -> ExitCode {
+    let manifest = match digest::manifest(path) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if json {
+        let entries: Vec<_> = manifest
+            .entries
+            .iter()
+            .map(|e| serde_json::json!({"path": e.path, "sha256": e.sha256}))
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({"entries": entries, "symlinks": manifest.symlinks})
+        );
+    } else {
+        for entry in &manifest.entries {
+            println!("{}  {}", entry.sha256, entry.path);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `verify <target>`: the options, then the verification.
+fn verify_command(path: &Path, args: &[String], json: bool) -> ExitCode {
+    let require_signed = args.iter().any(|a| a == "--signatures");
+    let registry = option(args, "--registry")
+        .map(|dir| Registry::new(Path::new(dir), option(args, "--allowed-signers")));
+    if require_signed && registry.is_none() {
+        eprintln!("error: --signatures needs --registry <dir>");
+        return ExitCode::from(2);
+    }
+    let options = VerifyOptions {
+        agent: option(args, "--agent").unwrap_or("claude"),
+        json,
+        require_signed,
+        registry,
+        verify_time: option(args, "--verify-time"),
+    };
+    verify(path, &options)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -45,59 +105,11 @@ fn main() -> ExitCode {
     let target = args.get(1).map(PathBuf::from);
 
     match (command.as_str(), target) {
-        ("digest", Some(path)) => match digest::skill_digest(&path) {
-            Ok(value) => {
-                println!("{value}");
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                eprintln!("error: {error}");
-                ExitCode::FAILURE
-            }
-        },
-        ("manifest", Some(path)) => match digest::manifest(&path) {
-            Ok(manifest) => {
-                if json {
-                    let entries: Vec<_> = manifest
-                        .entries
-                        .iter()
-                        .map(|e| serde_json::json!({"path": e.path, "sha256": e.sha256}))
-                        .collect();
-                    println!(
-                        "{}",
-                        serde_json::json!({"entries": entries, "symlinks": manifest.symlinks})
-                    );
-                } else {
-                    for entry in &manifest.entries {
-                        println!("{}  {}", entry.sha256, entry.path);
-                    }
-                }
-                ExitCode::SUCCESS
-            }
-            Err(error) => {
-                eprintln!("error: {error}");
-                ExitCode::FAILURE
-            }
-        },
+        ("digest", Some(path)) => digest_command(&path),
+        ("manifest", Some(path)) => manifest_command(&path, json),
         ("audit", Some(path)) => audit(&path, rules_dir.as_deref(), json, pedantic),
         ("attest", Some(kind)) => attest(&kind, &args, rules_dir.as_deref()),
-        ("verify", Some(path)) => {
-            let require_signed = args.iter().any(|a| a == "--signatures");
-            let registry = option(&args, "--registry")
-                .map(|dir| Registry::new(Path::new(dir), option(&args, "--allowed-signers")));
-            if require_signed && registry.is_none() {
-                eprintln!("error: --signatures needs --registry <dir>");
-                return ExitCode::from(2);
-            }
-            let options = VerifyOptions {
-                agent: option(&args, "--agent").unwrap_or("claude"),
-                json,
-                require_signed,
-                registry,
-                verify_time: option(&args, "--verify-time"),
-            };
-            verify(&path, &options)
-        }
+        ("verify", Some(path)) => verify_command(&path, &args, json),
         ("signature", Some(path)) => signature_command(&path, &args, json),
         ("advisories", Some(path)) => advisories_command(&path, &args, json),
         _ => usage(),
@@ -232,18 +244,72 @@ fn judge_registry(
     Ok((index, Some(feed), hits))
 }
 
-fn verify(target: &Path, options: &VerifyOptions<'_>) -> ExitCode {
-    let Some(skills) = lockfile::skills_dir(options.agent) else {
+/// The skills directory for `agent`, or the usage error naming the known ones.
+fn agent_skills_dir(agent: &str) -> Result<&'static str, ExitCode> {
+    lockfile::skills_dir(agent).ok_or_else(|| {
         let known: Vec<&str> = lockfile::NATIVE_AGENTS
             .iter()
             .map(|(name, _)| *name)
             .collect();
         eprintln!(
-            "error: unknown agent {:?}; expected one of {}",
-            options.agent,
+            "error: unknown agent {agent:?}; expected one of {}",
             known.join(", ")
         );
-        return ExitCode::from(2);
+        ExitCode::from(2)
+    })
+}
+
+/// The exit code for a verification: the most serious outcome wins.
+fn verify_exit_code(
+    statuses: [Option<Status>; 2],
+    integrity: bool,
+    revoked: bool,
+    require_signed: bool,
+) -> u8 {
+    exit_code(&[
+        (
+            EXIT_BAD_SIGNATURE,
+            statuses.contains(&Some(Status::BadSignature)),
+        ),
+        (EXIT_INTEGRITY_FAILURE, integrity),
+        (EXIT_REVOKED, revoked),
+        (
+            EXIT_UNSIGNED,
+            require_signed && statuses.contains(&Some(Status::Unsigned)),
+        ),
+    ])
+}
+
+/// `verify --json`: the whole verdict as one object.
+fn print_verify_json(
+    target: &Path,
+    code: u8,
+    problems: &[Problem],
+    hits: &[Revocation],
+    notes: &[String],
+    [index_status, feed_status]: [Option<Status>; 2],
+) {
+    let label =
+        |status: Option<Status>, absent: &'static str| status.map_or(absent, Status::as_str);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "target": target.display().to_string(),
+            "ok": code == 0,
+            "problems": problems,
+            "index_signature": label(index_status, "not checked"),
+            "advisory_feed": label(feed_status, "absent"),
+            "revoked": hits,
+            "notes": notes,
+        }))
+        .unwrap_or_default()
+    );
+}
+
+fn verify(target: &Path, options: &VerifyOptions<'_>) -> ExitCode {
+    let skills = match agent_skills_dir(options.agent) {
+        Ok(skills) => skills,
+        Err(code) => return code,
     };
     let problems = match lockfile::verify(target, &target.join(skills), Some(options.agent)) {
         Ok(problems) => problems,
@@ -269,48 +335,20 @@ fn verify(target: &Path, options: &VerifyOptions<'_>) -> ExitCode {
     }
     let statuses = [index_status, feed_status];
     let integrity = problems.iter().any(Problem::is_integrity_failure);
-    let code = exit_code(&[
-        (
-            EXIT_BAD_SIGNATURE,
-            statuses.contains(&Some(Status::BadSignature)),
-        ),
-        (EXIT_INTEGRITY_FAILURE, integrity),
-        (EXIT_REVOKED, !hits.is_empty()),
-        (
-            EXIT_UNSIGNED,
-            options.require_signed && statuses.contains(&Some(Status::Unsigned)),
-        ),
-    ]);
-    let label =
-        |status: Option<Status>, absent: &'static str| status.map_or(absent, Status::as_str);
-
-    if options.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "target": target.display().to_string(),
-                "ok": code == 0,
-                "problems": problems,
-                "index_signature": label(index_status, "not checked"),
-                "advisory_feed": label(feed_status, "absent"),
-                "revoked": hits,
-                "notes": notes,
-            }))
-            .unwrap_or_default()
-        );
-        return ExitCode::from(code);
-    }
-    print_report(
-        &problems,
-        &hits,
-        &notes,
-        [index_status, feed_status],
-        !integrity && code == 0,
+    let code = verify_exit_code(
+        statuses,
+        integrity,
+        !hits.is_empty(),
+        options.require_signed,
     );
+    if options.json {
+        print_verify_json(target, code, &problems, &hits, &notes, statuses);
+    } else {
+        print_report(&problems, &hits, &notes, statuses, !integrity && code == 0);
+    }
     ExitCode::from(code)
 }
 
-/// The human-readable form of a verification.
 fn print_report(
     problems: &[Problem],
     hits: &[Revocation],
@@ -426,10 +464,7 @@ fn advisories_command(feed: &Path, args: &[String], json: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let lock: serde_json::Value = match std::fs::read_to_string(lock_path)
-        .map_err(|e| e.to_string())
-        .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
-    {
+    let lock = match read_json(Path::new(lock_path)) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("error: {lock_path}: {error}");
@@ -454,23 +489,34 @@ fn advisories_command(feed: &Path, args: &[String], json: bool) -> ExitCode {
         (EXIT_REVOKED, !hits.is_empty()),
         (EXIT_UNSIGNED, status == Status::Unsigned),
     ]);
+    print_revocations(status, &hits, json);
+    ExitCode::from(code)
+}
+
+/// A JSON file, or why it could not be read.
+fn read_json(path: &Path) -> Result<serde_json::Value, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+/// The feed's status and each revoked install, as text or JSON.
+fn print_revocations(status: Status, hits: &[Revocation], json: bool) {
     if json {
         println!(
             "{}",
             serde_json::json!({"advisory_feed": status.as_str(), "revoked": hits})
         );
-    } else {
-        println!("{}", status.as_str());
-        for hit in &hits {
-            println!(
-                "REVOKED {}  {} by {}",
-                hit.skill,
-                hit.digest,
-                hit.advisories.join(", ")
-            );
-        }
+        return;
     }
-    ExitCode::from(code)
+    println!("{}", status.as_str());
+    for hit in hits {
+        println!(
+            "REVOKED {}  {} by {}",
+            hit.skill,
+            hit.digest,
+            hit.advisories.join(", ")
+        );
+    }
 }
 
 /// Load a skill directory's files into memory for structural analysis.
@@ -557,20 +603,8 @@ fn attest(kind: &Path, args: &[String], rules_dir: Option<&Path>) -> ExitCode {
     }
 }
 
-fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> ExitCode {
-    let Some(rules_dir) = rules_dir else {
-        eprintln!("error: --rules <dir> is required (agtmls-spec/rules)");
-        return ExitCode::from(2);
-    };
-    let rules = match RuleSet::load(rules_dir) {
-        Ok(rules) => rules,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let analyzer = Analyzer::new(rules).pedantic(pedantic);
-
+/// Every finding for a skill directory (structural and per-file) or a file.
+fn audit_path(analyzer: &Analyzer, path: &Path) -> Vec<agtmls_core::analyzer::Finding> {
     let mut findings = Vec::new();
     if path.is_dir() {
         // Structural rules reason about the skill, not about any one file:
@@ -603,8 +637,11 @@ fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> E
     } else {
         findings.extend(analyzer.audit_file(path));
     }
-    findings.sort_by(|a, b| (&a.file, a.line, &a.rule).cmp(&(&b.file, b.line, &b.rule)));
+    findings
+}
 
+/// The findings as JSON, as `[SEVERITY] file:line` lines, or an all-clear.
+fn print_findings(findings: &[agtmls_core::analyzer::Finding], json: bool) {
     if json {
         println!(
             "{}",
@@ -617,7 +654,7 @@ fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> E
     } else if findings.is_empty() {
         println!("OK: zero findings");
     } else {
-        for f in &findings {
+        for f in findings {
             println!(
                 "[{}] {}:{} ({} {}): {}",
                 f.severity,
@@ -629,6 +666,26 @@ fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> E
             );
         }
     }
+}
+
+fn audit(path: &Path, rules_dir: Option<&Path>, json: bool, pedantic: bool) -> ExitCode {
+    let Some(rules_dir) = rules_dir else {
+        eprintln!("error: --rules <dir> is required (agtmls-spec/rules)");
+        return ExitCode::from(2);
+    };
+    let rules = match RuleSet::load(rules_dir) {
+        Ok(rules) => rules,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let analyzer = Analyzer::new(rules).pedantic(pedantic);
+
+    let mut findings = audit_path(&analyzer, path);
+    findings.sort_by(|a, b| (&a.file, a.line, &a.rule).cmp(&(&b.file, b.line, &b.rule)));
+
+    print_findings(&findings, json);
     if findings
         .iter()
         .any(|f| f.severity == "HIGH" || f.severity == "CRITICAL")

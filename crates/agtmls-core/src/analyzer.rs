@@ -255,6 +255,83 @@ fn line_map(content: &str) -> Vec<usize> {
     map
 }
 
+const REPLACEMENT: char = '\u{FFFD}';
+
+/// The escape starting at byte `i` (a backslash): its kind, and for `\u`
+/// the code unit it names. `None` when the backslash starts no escape.
+fn escape_at(content: &str, i: usize) -> Option<(char, Option<u32>)> {
+    match content[i + 1..].chars().next() {
+        Some(c @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')) => Some((c, None)),
+        Some('u') => content
+            .get(i + 2..i + 6)
+            .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()))
+            .and_then(|h| u32::from_str_radix(h, 16).ok())
+            .map(|code| ('u', Some(code))),
+        _ => None,
+    }
+}
+
+/// A decoded character that must not start a line becomes a space.
+const fn without_line_breaks(decoded: char) -> char {
+    if matches!(
+        decoded,
+        '\n' | '\r' | '\u{2028}' | '\u{2029}' | '\u{85}' | '\u{0b}' | '\u{0c}'
+    ) {
+        ' '
+    } else {
+        decoded
+    }
+}
+
+/// The output so far, and a high surrogate waiting for its low half.
+struct Decoded {
+    out: String,
+    pending_high: Option<u32>,
+}
+
+impl Decoded {
+    /// A high surrogate with no low half after it is a lone surrogate.
+    fn settle(&mut self) {
+        if self.pending_high.take().is_some() {
+            self.out.push(REPLACEMENT);
+        }
+    }
+
+    /// A two-character escape (`\n`, `\"`, ...): the quote, backslash and
+    /// slash stand for themselves; the whitespace escapes become a space.
+    fn simple(&mut self, kind: char) {
+        self.settle();
+        self.out.push(match kind {
+            '"' => '"',
+            '\\' => '\\',
+            '/' => '/',
+            _ => ' ',
+        });
+    }
+
+    /// A `\uXXXX` escape, pairing surrogates.
+    fn unit(&mut self, code: u32) {
+        match code {
+            0xD800..=0xDBFF => {
+                if self.pending_high.replace(code).is_some() {
+                    self.out.push(REPLACEMENT);
+                }
+            }
+            0xDC00..=0xDFFF => {
+                let paired = self.pending_high.take().and_then(|high| {
+                    char::from_u32(0x10000 + ((high - 0xD800) << 10) + (code - 0xDC00))
+                });
+                self.out.push(paired.unwrap_or(REPLACEMENT));
+            }
+            other => {
+                self.settle();
+                let decoded = char::from_u32(other).unwrap_or(REPLACEMENT);
+                self.out.push(without_line_breaks(decoded));
+            }
+        }
+    }
+}
+
 /// JSON string escapes decoded, never creating a line (spec 4.3).
 ///
 /// Escaped whitespace and any decoded line terminator become a space, so line
@@ -262,81 +339,32 @@ fn line_map(content: &str) -> Vec<usize> {
 /// a lone surrogate U+FFFD.
 #[must_use]
 pub fn decode_json_escapes(content: &str) -> String {
-    const REPLACEMENT: char = '\u{FFFD}';
-    let mut out = String::with_capacity(content.len());
-    let mut pending_high: Option<u32> = None;
+    let mut decoded = Decoded {
+        out: String::with_capacity(content.len()),
+        pending_high: None,
+    };
     let mut chars = content.char_indices().peekable();
     while let Some((i, ch)) = chars.next() {
         let escape = if ch == '\\' {
-            match content[i + 1..].chars().next() {
-                Some(c @ ('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't')) => Some((c, None)),
-                Some('u') => content
-                    .get(i + 2..i + 6)
-                    .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()))
-                    .and_then(|h| u32::from_str_radix(h, 16).ok())
-                    .map(|code| ('u', Some(code))),
-                _ => None,
-            }
+            escape_at(content, i)
         } else {
             None
         };
         let Some((kind, code)) = escape else {
-            if pending_high.take().is_some() {
-                out.push(REPLACEMENT);
-            }
-            out.push(ch);
+            decoded.settle();
+            decoded.out.push(ch);
             continue;
         };
-        let skip = if kind == 'u' { 5 } else { 1 };
-        for _ in 0..skip {
+        for _ in 0..if kind == 'u' { 5 } else { 1 } {
             chars.next();
         }
         match code {
-            None => {
-                if pending_high.take().is_some() {
-                    out.push(REPLACEMENT);
-                }
-                out.push(match kind {
-                    '"' => '"',
-                    '\\' => '\\',
-                    '/' => '/',
-                    _ => ' ',
-                });
-            }
-            Some(high @ 0xD800..=0xDBFF) => {
-                if pending_high.replace(high).is_some() {
-                    out.push(REPLACEMENT);
-                }
-            }
-            Some(low @ 0xDC00..=0xDFFF) => match pending_high.take() {
-                Some(high) => out.push(
-                    char::from_u32(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
-                        .unwrap_or(REPLACEMENT),
-                ),
-                None => out.push(REPLACEMENT),
-            },
-            Some(other) => {
-                if pending_high.take().is_some() {
-                    out.push(REPLACEMENT);
-                }
-                let decoded = char::from_u32(other).unwrap_or(REPLACEMENT);
-                out.push(
-                    if matches!(
-                        decoded,
-                        '\n' | '\r' | '\u{2028}' | '\u{2029}' | '\u{85}' | '\u{0b}' | '\u{0c}'
-                    ) {
-                        ' '
-                    } else {
-                        decoded
-                    },
-                );
-            }
+            None => decoded.simple(kind),
+            Some(code) => decoded.unit(code),
         }
     }
-    if pending_high.is_some() {
-        out.push(REPLACEMENT);
-    }
-    out
+    decoded.settle();
+    decoded.out
 }
 
 #[cfg(test)]

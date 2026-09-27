@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use crate::analyzer::Finding;
-use crate::rules::{EmojiContext, RuleSet, Severity};
+use crate::rules::{EmojiContext, Rule, RuleSet, Severity};
 
 fn finding(
     file: &str,
@@ -65,6 +65,92 @@ fn subdivision_flags(chars: &[char], context: &EmojiContext) -> BTreeMap<usize, 
     flags
 }
 
+/// What one invisible character is, given the emoji context of its line.
+#[derive(Clone, Copy)]
+enum Seen {
+    /// A hidden channel: `AGT-STEG-001`.
+    Channel,
+    /// A selector right after an emoji base: emoji presentation.
+    Emoji,
+    /// The first character of a subdivision flag, with its length.
+    FlagStart(usize),
+    /// A later character of a subdivision flag, reported with its start.
+    FlagInside,
+}
+
+fn classify(
+    context: &EmojiContext,
+    chars: &[char],
+    column: usize,
+    flags: &BTreeMap<usize, usize>,
+) -> Seen {
+    let ch = chars[column];
+    if context.is_selector(ch) {
+        let after_base = column > 0 && context.is_base(chars[column - 1]);
+        let in_run = chars
+            .get(column + 1)
+            .is_some_and(|&n| context.is_selector(n));
+        if after_base && !in_run {
+            return Seen::Emoji;
+        }
+    }
+    if flags
+        .iter()
+        .any(|(start, count)| column >= *start && column < start + count)
+    {
+        return flags
+            .get(&column)
+            .map_or(Seen::FlagInside, |&count| Seen::FlagStart(count));
+    }
+    Seen::Channel
+}
+
+/// The finding for one invisible character, if it gets one.
+fn invisible_finding(
+    rule: &Rule,
+    file: &str,
+    line: usize,
+    (column, ch, name): (usize, char, &str),
+    seen: Seen,
+    pedantic: bool,
+) -> Option<Finding> {
+    let low = |message: String| {
+        finding(
+            file,
+            line,
+            Severity::Low,
+            &rule.spec.category,
+            "AGT-STEG-002",
+            message,
+        )
+    };
+    match seen {
+        Seen::Emoji if pedantic => Some(low(format!(
+            "{name} (U+{:04X}) after an emoji base at column {}: emoji presentation, not a channel",
+            ch as u32,
+            column + 1
+        ))),
+        Seen::FlagStart(count) => Some(low(format!(
+            "Tag sequence forming a subdivision flag at column {} ({} tag character(s), terminated)",
+            column + 1,
+            count - 1
+        ))),
+        Seen::Emoji | Seen::FlagInside => None,
+        Seen::Channel => Some(finding(
+            file,
+            line,
+            rule.spec.severity,
+            &rule.spec.category,
+            &rule.spec.id,
+            format!(
+                "Invisible unicode character detected: {name} (U+{:04X}) at column {}",
+                ch as u32,
+                column + 1
+            ),
+        )),
+    }
+}
+
 /// `AGT-STEG-001` with the emoji context applied (spec 4.10).
 ///
 /// A selector directly after an emoji base is an emoji as written: it is
@@ -86,68 +172,18 @@ pub fn check_invisible_with(
     for (line_index, line) in content.lines().enumerate() {
         let chars: Vec<char> = line.chars().collect();
         let flags = ctx.map_or_else(BTreeMap::new, |c| subdivision_flags(&chars, c));
-        let covered = |column: usize| {
-            flags
-                .iter()
-                .any(|(start, count)| column >= *start && column < start + count)
-        };
         for (column, &ch) in chars.iter().enumerate() {
             let Some(name) = rule.invisible_name(ch) else {
                 continue;
             };
-            if let Some(context) = ctx {
-                if context.is_selector(ch) {
-                    let after_base = column > 0 && context.is_base(chars[column - 1]);
-                    let in_run = chars
-                        .get(column + 1)
-                        .is_some_and(|&n| context.is_selector(n));
-                    if after_base && !in_run {
-                        if pedantic {
-                            findings.push(finding(
-                                file,
-                                line_index + 1,
-                                Severity::Low,
-                                &rule.spec.category,
-                                "AGT-STEG-002",
-                                format!(
-                                    "{name} (U+{:04X}) after an emoji base at column {}: emoji presentation, not a channel",
-                                    ch as u32,
-                                    column + 1
-                                ),
-                            ));
-                        }
-                        continue;
-                    }
-                }
-                if covered(column) {
-                    if let Some(count) = flags.get(&column) {
-                        findings.push(finding(
-                            file,
-                            line_index + 1,
-                            Severity::Low,
-                            &rule.spec.category,
-                            "AGT-STEG-002",
-                            format!(
-                                "Tag sequence forming a subdivision flag at column {} ({} tag character(s), terminated)",
-                                column + 1,
-                                count - 1
-                            ),
-                        ));
-                    }
-                    continue;
-                }
-            }
-            findings.push(finding(
+            let seen = ctx.map_or(Seen::Channel, |c| classify(c, &chars, column, &flags));
+            findings.extend(invisible_finding(
+                rule,
                 file,
                 line_index + 1,
-                rule.spec.severity,
-                &rule.spec.category,
-                &rule.spec.id,
-                format!(
-                    "Invisible unicode character detected: {name} (U+{:04X}) at column {}",
-                    ch as u32,
-                    column + 1
-                ),
+                (column, ch, name),
+                seen,
+                pedantic,
             ));
         }
     }

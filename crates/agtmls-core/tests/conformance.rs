@@ -344,6 +344,21 @@ fn signature_vectors_match_the_specification() {
     }
 }
 
+/// (name, integrity) for each skill in an advisory case's lockfile.
+fn lockfile_skills(case: &Value) -> Vec<(&str, &str)> {
+    case["lockfile"]["skills"]
+        .as_array()
+        .expect("skills")
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().expect("name"),
+                s["integrity"].as_str().expect("integrity"),
+            )
+        })
+        .collect()
+}
+
 /// spec 11.5: the feed's signature first, then revocation by digest only.
 #[test]
 fn advisory_vectors_match_the_specification() {
@@ -372,17 +387,7 @@ fn advisory_vectors_match_the_specification() {
             cases["verify_time"].as_str(),
         )
         .unwrap_or_else(|e| panic!("{name}: {e}"));
-        let installed: Vec<(&str, &str)> = case["lockfile"]["skills"]
-            .as_array()
-            .expect("skills")
-            .iter()
-            .map(|s| {
-                (
-                    s["name"].as_str().expect("name"),
-                    s["integrity"].as_str().expect("integrity"),
-                )
-            })
-            .collect();
+        let installed = lockfile_skills(case);
         let hits = if verdict == Status::Verified {
             advisories::revoked(&feed, installed)
         } else {

@@ -30,3 +30,6 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+# Complexity ceilings; thresholds in clippy.toml.
+cognitive_complexity = "deny"
+too_many_lines = "deny"
