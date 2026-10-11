@@ -6,7 +6,7 @@ resolver = "3"
 members = ["crates/agtmls-core", "crates/agtmls-cli"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 # Floor chosen for edition 2024 and resolver 3. Raised only with a CHANGELOG
 # entry; shared-msrv-core.yml proves the floor still builds.
