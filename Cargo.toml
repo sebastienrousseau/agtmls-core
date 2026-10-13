@@ -8,9 +8,10 @@ members = ["crates/agtmls-core", "crates/agtmls-cli"]
 [workspace.package]
 version = "0.0.3"
 edition = "2024"
-# Floor chosen for edition 2024 and resolver 3. Raised only with a CHANGELOG
-# entry; shared-msrv-core.yml proves the floor still builds.
-rust-version = "1.86.0"
+# The MSRV shared by the portfolio's Rust repositories (edition 2024 and
+# resolver 3 alone need 1.85). Raised only with a CHANGELOG entry; the msrv
+# job in ci.yml proves the floor still builds.
+rust-version = "1.89.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sebastienrousseau/agtmls-core"
 homepage = "https://github.com/sebastienrousseau/agtmls-core"
