@@ -98,10 +98,10 @@ pub fn verify(
     principal: &str,
     verify_time: Option<&str>,
 ) -> Result<Status, VerifyError> {
-    if let Some(time) = verify_time {
-        if !is_verify_time(time) {
-            return Err(VerifyError::BadTime(time.to_owned()));
-        }
+    if let Some(time) = verify_time
+        && !is_verify_time(time)
+    {
+        return Err(VerifyError::BadTime(time.to_owned()));
     }
     if !signature.is_file() || !allowed_signers.is_file() {
         return Ok(Status::Unsigned);
