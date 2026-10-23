@@ -11,6 +11,10 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ### Changed
 
+- `KEYS.asc` trusts a second maintainer signing key,
+  `SHA256:kIOPAavp1TCEauTr1tTIN3cv+tSs6F9m/4lZjuM9tqk`, so release tags can
+  be signed on either maintainer machine. Each key line now carries its
+  fingerprint for out-of-band checks.
 - **The MSRV is now Rust 1.89.0** (was 1.86.0), the floor shared by the
   portfolio's Rust repositories. `rust-version`, the `msrv` CI job and the
   README badge move together. Two nested `if let` blocks became let chains,
