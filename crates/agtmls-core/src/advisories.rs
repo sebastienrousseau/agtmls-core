@@ -67,7 +67,7 @@ pub fn revoked<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::revoked;
+    use super::{Revocation, revoked};
     use serde_json::json;
 
     fn feed() -> serde_json::Value {
@@ -95,11 +95,17 @@ mod tests {
 
     #[test]
     fn withdrawn_and_same_name_other_digest_revoke_nothing() {
-        assert!(revoked(&feed(), [("b", "sha256:33"), ("a", "sha256:44")]).is_empty());
+        assert_eq!(
+            revoked(&feed(), [("b", "sha256:33"), ("a", "sha256:44")]),
+            Vec::<Revocation>::new()
+        );
     }
 
     #[test]
     fn a_malformed_feed_revokes_nothing() {
-        assert!(revoked(&json!({"advisories": "no"}), [("a", "sha256:22")]).is_empty());
+        assert_eq!(
+            revoked(&json!({"advisories": "no"}), [("a", "sha256:22")]),
+            Vec::<Revocation>::new()
+        );
     }
 }

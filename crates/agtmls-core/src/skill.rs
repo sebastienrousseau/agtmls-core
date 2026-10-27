@@ -489,13 +489,13 @@ code_point_ranges = [ { from = "U+FE00", to = "U+FE0F", name = "Variation select
     #[test]
     fn a_selector_after_an_emoji_base_is_silent_unless_pedantic() {
         let rules = rules(STEG);
-        assert!(
+        assert_eq!(
             ids(
                 &rules,
                 "Done \u{2705}\u{FE0F} and \u{1F680}\u{FE0F}.",
                 false
-            )
-            .is_empty()
+            ),
+            Vec::<(String, String)>::new()
         );
         assert_eq!(
             ids(&rules, "Done \u{2705}\u{FE0F}.", true),
@@ -505,13 +505,13 @@ code_point_ranges = [ { from = "U+FE00", to = "U+FE0F", name = "Variation select
 
     #[test]
     fn a_keycap_is_an_emoji_base() {
-        assert!(
+        assert_eq!(
             ids(
                 &rules(STEG),
                 "Press 1\u{FE0F}\u{20E3} and #\u{FE0F}\u{20E3}.",
                 false
-            )
-            .is_empty()
+            ),
+            Vec::<(String, String)>::new()
         );
     }
 
@@ -636,7 +636,7 @@ WebFetch = "network_access"
             frontmatter_tools(&md("\"Read Bash(git log:*) WebFetch\"")),
             ["Read", "Bash(git log:*)", "WebFetch"]
         );
-        assert!(frontmatter_tools("no frontmatter").is_empty());
+        assert_eq!(frontmatter_tools("no frontmatter"), Vec::<String>::new());
     }
 
     #[test]
@@ -652,8 +652,14 @@ WebFetch = "network_access"
             escalated("\"Bash(git log:*)\"", r#"{"executes_commands": false}"#).len(),
             1
         );
-        assert!(escalated("\"Bash(git log:*)\"", r#"{"executes_commands": true}"#).is_empty());
-        assert!(escalated("WebFetch", r#"{"network_access": "optional"}"#).is_empty());
+        assert_eq!(
+            escalated("\"Bash(git log:*)\"", r#"{"executes_commands": true}"#),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            escalated("WebFetch", r#"{"network_access": "optional"}"#),
+            Vec::<String>::new()
+        );
         assert_eq!(
             escalated("WebFetch", r#"{"network_access": "none"}"#).len(),
             1
