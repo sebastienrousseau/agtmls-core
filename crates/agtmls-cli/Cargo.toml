@@ -4,6 +4,9 @@
 [package]
 name = "agtmls-cli"
 description = "Command-line interface to the AgtMLS engine: skill digests and static security analysis"
+keywords = ["agent", "skills", "security", "sbom", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

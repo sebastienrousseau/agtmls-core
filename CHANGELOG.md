@@ -7,10 +7,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
-## [0.0.3] - Unreleased
+## [0.0.3] - 2026-11-07
+
+The first release published to crates.io, so dependants such as
+`agtmls-lsp` can require `agtmls-core = "0.0.3"` instead of a git
+revision.
 
 ### Changed
 
+- Both published crates now carry `LICENSE-MIT`, `LICENSE-APACHE`,
+  `CHANGELOG.md` and the README in their crates.io archive (symlinks to
+  the workspace copies); `agtmls-cli` gains its README, keywords and
+  categories.
+- Dependencies: `toml` 1.2.1 (with `serde_spanned` 1.1.3, `toml_datetime`
+  1.1.3, `toml_writer` 1.2.0), and in CI `osv-scanner-action` 2.7.0,
+  `crates-io-auth-action` 1.0.6 and newer `rust-toolchain` and
+  `rust-cache` pins.
 - `KEYS.asc` trusts a second maintainer signing key,
   `SHA256:kIOPAavp1TCEauTr1tTIN3cv+tSs6F9m/4lZjuM9tqk`, so release tags can
   be signed on either maintainer machine. Each key line now carries its
