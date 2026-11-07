@@ -9,4 +9,4 @@ authors:
 repository-code: "https://github.com/sebastienrousseau/agtmls-core"
 abstract: "Rust engine for the AgtMLS agent skills registry."
 license: "Apache-2.0 OR MIT"
-version: 0.0.2
+version: 0.0.3

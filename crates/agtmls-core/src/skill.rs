@@ -221,10 +221,10 @@ fn tool_tokens(value: &str) -> Vec<String> {
         rest = &rest[start..];
         let end = rest.find(separator).unwrap_or(rest.len());
         let mut token_end = end;
-        if rest[end..].starts_with('(') {
-            if let Some(close) = rest[end..].find(')') {
-                token_end = end + close + 1;
-            }
+        if rest[end..].starts_with('(')
+            && let Some(close) = rest[end..].find(')')
+        {
+            token_end = end + close + 1;
         }
         tools.push(rest[..token_end].to_owned());
         rest = &rest[token_end..];

@@ -19,7 +19,7 @@
 #![doc(html_root_url = "https://docs.rs/agtmls-core")]
 // The README is the crate documentation, so its examples are compiled by
 // `cargo test`. A README example that has never been compiled is a guess.
-#![doc = include_str!("../../../README.md")]
+#![doc = include_str!("../README.md")]
 
 pub mod advisories;
 pub mod analyzer;

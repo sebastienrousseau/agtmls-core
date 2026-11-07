@@ -4,6 +4,9 @@
 [package]
 name = "agtmls-cli"
 description = "Command-line interface to the AgtMLS engine: skill digests and static security analysis"
+keywords = ["agent", "skills", "security", "sbom", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,7 +20,7 @@ name = "agtmls-rs"
 path = "src/main.rs"
 
 [dependencies]
-agtmls-core = { path = "../agtmls-core", version = "=0.0.2" }
+agtmls-core = { path = "../agtmls-core", version = "=0.0.3" }
 serde_json = { workspace = true }
 
 [lints]
