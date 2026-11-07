@@ -495,7 +495,7 @@ code_point_ranges = [ { from = "U+FE00", to = "U+FE0F", name = "Variation select
                 "Done \u{2705}\u{FE0F} and \u{1F680}\u{FE0F}.",
                 false
             ),
-            []
+            Vec::<(String, String)>::new()
         );
         assert_eq!(
             ids(&rules, "Done \u{2705}\u{FE0F}.", true),
@@ -511,7 +511,7 @@ code_point_ranges = [ { from = "U+FE00", to = "U+FE0F", name = "Variation select
                 "Press 1\u{FE0F}\u{20E3} and #\u{FE0F}\u{20E3}.",
                 false
             ),
-            []
+            Vec::<(String, String)>::new()
         );
     }
 
@@ -636,7 +636,7 @@ WebFetch = "network_access"
             frontmatter_tools(&md("\"Read Bash(git log:*) WebFetch\"")),
             ["Read", "Bash(git log:*)", "WebFetch"]
         );
-        assert_eq!(frontmatter_tools("no frontmatter"), [] as [&str; 0]);
+        assert_eq!(frontmatter_tools("no frontmatter"), Vec::<String>::new());
     }
 
     #[test]
@@ -654,11 +654,11 @@ WebFetch = "network_access"
         );
         assert_eq!(
             escalated("\"Bash(git log:*)\"", r#"{"executes_commands": true}"#),
-            [] as [&str; 0]
+            Vec::<String>::new()
         );
         assert_eq!(
             escalated("WebFetch", r#"{"network_access": "optional"}"#),
-            [] as [&str; 0]
+            Vec::<String>::new()
         );
         assert_eq!(
             escalated("WebFetch", r#"{"network_access": "none"}"#).len(),
