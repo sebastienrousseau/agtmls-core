@@ -302,6 +302,8 @@ pub enum LoadError {
     Io(std::io::Error),
     /// A rule file was not valid TOML, or did not match the schema.
     Toml(String, toml::de::Error),
+    /// A JSON rule source was not valid JSON, or did not match the schema.
+    Json(String, serde_json::Error),
     /// A rule declared a pattern that is not a valid regex.
     Regex(String, Box<regex::Error>),
     /// A rule's own declared example contradicts its pattern.
@@ -313,6 +315,7 @@ impl std::fmt::Display for LoadError {
         match self {
             Self::Io(e) => write!(f, "reading rules: {e}"),
             Self::Toml(id, e) => write!(f, "{id}: invalid rule TOML: {e}"),
+            Self::Json(id, e) => write!(f, "{id}: invalid rule JSON: {e}"),
             Self::Regex(id, e) => write!(f, "{id}: invalid pattern: {e}"),
             Self::SelfTest(m) => write!(f, "rule self-test failed: {m}"),
         }
@@ -362,10 +365,37 @@ impl RuleSet {
     pub fn from_sources<'a>(
         sources: impl IntoIterator<Item = (&'a str, &'a str)>,
     ) -> Result<Self, LoadError> {
+        Self::from_specs(sources.into_iter().map(|(name, text)| {
+            toml::from_str(text).map_err(|e| LoadError::Toml(name.to_owned(), e))
+        }))
+    }
+
+    /// Load and compile rules from in-memory JSON sources: each the JSON form
+    /// of a rule file's TOML, under the same schema.
+    ///
+    /// For a build that converts the rules at compile time so it does not
+    /// carry a TOML parser: the WASM module, where size is budgeted. The rule
+    /// set is the one [`RuleSet::from_sources`] gives for the same rules, and
+    /// it runs the same self-tests.
+    ///
+    /// # Errors
+    /// Returns [`LoadError`] if a source is not valid JSON or does not match
+    /// the schema, a pattern does not compile, or a rule fails its own
+    /// declared examples.
+    pub fn from_json_sources<'a>(
+        sources: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Result<Self, LoadError> {
+        Self::from_specs(sources.into_iter().map(|(name, text)| {
+            serde_json::from_str(text).map_err(|e| LoadError::Json(name.to_owned(), e))
+        }))
+    }
+
+    fn from_specs(
+        specs: impl IntoIterator<Item = Result<RuleSpec, LoadError>>,
+    ) -> Result<Self, LoadError> {
         let mut rules = BTreeMap::new();
-        for (name, text) in sources {
-            let spec: RuleSpec =
-                toml::from_str(text).map_err(|e| LoadError::Toml(name.to_owned(), e))?;
+        for spec in specs {
+            let spec = spec?;
             let regex = match &spec.pattern {
                 Some(source) => Some(
                     Regex::new(source)

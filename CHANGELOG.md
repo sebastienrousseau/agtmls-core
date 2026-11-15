@@ -9,6 +9,24 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-11-15
+
+### Added
+
+- `RuleSet::from_json_sources` loads rules from their JSON form, the same
+  schema as the TOML, with the same self-tests. A build that converts the
+  rules at compile time no longer has to carry a TOML parser: agtmls-wasm
+  is 65 KB smaller gzipped with it. A conformance test loads every spec
+  rule both ways and requires the same rule set.
+- `LoadError::Json` names the rule whose JSON failed. `LoadError` gains a
+  variant, so a `match` over it that lists every variant needs a new arm.
+
+### Fixed
+
+- `target-main/`, a local build directory the 0.0.4 bump committed, is no
+  longer tracked, and `.gitignore` covers every `/target*/` directory. It
+  was never in the crates.io package.
+
 ## [0.0.4] - 2026-11-15
 
 ### Security
