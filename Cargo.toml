@@ -14,7 +14,6 @@ edition = "2024"
 rust-version = "1.89.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sebastienrousseau/agtmls-core"
-homepage = "https://github.com/sebastienrousseau/agtmls-core"
 authors = ["Sebastien Rousseau <sebastian.rousseau@gmail.com>"]
 
 [workspace.dependencies]
