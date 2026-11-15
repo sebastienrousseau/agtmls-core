@@ -181,6 +181,55 @@ fn rules_load_and_self_test() {
     }
 }
 
+/// The spec's rules as `(name, JSON)` pairs, converted from their TOML.
+fn rules_as_json() -> Vec<(String, String)> {
+    let dir = spec_dir().join("rules");
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("read rules dir")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(path).expect("read rule");
+            let value: toml::Value = toml::from_str(&text).expect("rule TOML");
+            let name = path.file_stem().unwrap_or_default().to_string_lossy();
+            (
+                name.into_owned(),
+                serde_json::to_string(&value).expect("to JSON"),
+            )
+        })
+        .collect()
+}
+
+/// A build that embeds the rules as JSON (the WASM module) must load exactly
+/// the rule set the TOML gives, field for field and pattern for pattern.
+#[test]
+fn json_sources_load_the_same_rule_set_as_toml() {
+    let from_toml = RuleSet::load(&spec_dir().join("rules")).expect("load TOML rules");
+    let json = rules_as_json();
+    let from_json = RuleSet::from_json_sources(json.iter().map(|(n, t)| (n.as_str(), t.as_str())))
+        .expect("load JSON rules");
+    assert_eq!(from_json.len(), from_toml.len());
+    assert_eq!(format!("{from_json:?}"), format!("{from_toml:?}"));
+}
+
+/// A malformed JSON rule is a load error that names the rule.
+#[test]
+fn json_sources_name_the_rule_that_fails_to_parse() {
+    let error = RuleSet::from_json_sources([("AGT-BAD-001", "{not json")])
+        .expect_err("malformed JSON must not load");
+    assert!(
+        error
+            .to_string()
+            .starts_with("AGT-BAD-001: invalid rule JSON"),
+        "{error}"
+    );
+}
+
 /// L3: the entire security corpus, including its evasion variants.
 ///
 /// No category is excluded. The suite previously skipped the structural
