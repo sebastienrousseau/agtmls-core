@@ -9,6 +9,8 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-11-15
+
 ### Security
 
 - `lockfile::read`, and so `verify`, refuse a lockfile entry whose `name`

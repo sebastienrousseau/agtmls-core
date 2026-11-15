@@ -19,7 +19,7 @@ name = "agtmls-rs"
 path = "src/main.rs"
 
 [dependencies]
-agtmls-core = { path = "../agtmls-core", version = "=0.0.3" }
+agtmls-core = { path = "../agtmls-core", version = "=0.0.4" }
 serde_json = { workspace = true }
 
 [lints]
