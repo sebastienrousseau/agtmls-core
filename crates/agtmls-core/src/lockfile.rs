@@ -140,15 +140,38 @@ impl Problem {
     }
 }
 
+/// Whether `value` is one directory name (spec 6.2): not empty, `.` or `..`,
+/// and holding no separator, drive (`C:x` joins as another drive on Windows)
+/// or NUL. Anything else, joined onto the skills directory, could leave it.
+fn is_single_name(value: &str) -> bool {
+    !matches!(value, "" | "." | "..") && !value.contains(['/', '\\', ':', '\0'])
+}
+
 /// Read the lockfile from an install target.
 ///
+/// The lockfile is written into the target repository, so whoever wrote the
+/// repository wrote it: an entry whose `name` or `path` is not a single
+/// directory name makes the whole lockfile unreadable (spec 6.5, exit 3).
+///
 /// # Errors
-/// Returns an error string if the file is absent or not valid JSON.
+/// Returns an error string if the file is absent, not valid JSON, or has an
+/// entry that is not a single directory name.
 pub fn read(target: &Path) -> Result<Lockfile, String> {
     let path = target.join(LOCKFILE_RELATIVE);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("no lockfile at {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("lockfile is not valid JSON: {e}"))
+    let lock: Lockfile =
+        serde_json::from_str(&text).map_err(|e| format!("lockfile is not valid JSON: {e}"))?;
+    for entry in &lock.skills {
+        for (field, value) in [("name", &entry.name), ("path", &entry.path)] {
+            if !is_single_name(value) {
+                return Err(format!(
+                    "lockfile entry `{field}` {value:?} is not a single directory name"
+                ));
+            }
+        }
+    }
+    Ok(lock)
 }
 
 /// Compare an installed tree against its lockfile.
@@ -297,6 +320,39 @@ mod tests {
         );
         let everyone = verify(&t.0, &t.0.join(".claude/skills"), None).unwrap();
         assert_eq!(everyone, Vec::new());
+    }
+
+    /// The lockfile is written into the target repository, so whoever wrote
+    /// the repository wrote it (spec 6.2). An entry that names anything but a
+    /// single directory could reach outside the skills directory: `/` would
+    /// replace it outright, since `Path::join` with an absolute path does.
+    #[test]
+    fn an_entry_that_leaves_the_skills_directory_is_unreadable() {
+        let cases = [
+            ("path", "../general"),
+            ("path", "/"),
+            ("path", "a/b"),
+            ("path", "a\\b"),
+            ("path", "C:general"),
+            ("path", ".."),
+            ("path", "."),
+            ("path", ""),
+            ("path", "a\0b"),
+            ("name", "../general"),
+        ];
+        for (i, (field, value)) in cases.iter().enumerate() {
+            let t = target(&format!("unsafe-{i}"), &[(&[".claude"], "general", None)]);
+            let path = t.0.join(LOCKFILE_RELATIVE);
+            let mut lock: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            lock["skills"][0][*field] = json!(value);
+            std::fs::write(&path, lock.to_string()).unwrap();
+            let error = verify(&t.0, &t.0.join(".claude/skills"), Some("claude")).unwrap_err();
+            assert!(
+                error.contains("single directory name"),
+                "{field}={value:?}: {error}"
+            );
+        }
     }
 
     #[test]

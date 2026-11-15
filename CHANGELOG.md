@@ -7,6 +7,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
+## [Unreleased]
+
+### Security
+
+- `lockfile::read`, and so `verify`, refuse a lockfile entry whose `name`
+  or `path` is not a single directory name (empty, `.`, `..`, or holding
+  `/`, `\`, `:` or NUL), as an unreadable lockfile: exit 3 (agtmls-spec
+  6.5). The lockfile is written into the target repository, and `verify`
+  joined `path` onto the skills directory unchecked, so `../<dir>` read
+  outside it and an absolute `path` replaced it outright (`Path::join`).
+  The reference implementation makes the same check (agtmls 0.0.28).
+
+### Changed
+
+- `sha2` 0.11.1 (Dependabot #25).
+
 ## [0.0.3] - 2026-11-07
 
 The first release published to crates.io, so dependants such as
