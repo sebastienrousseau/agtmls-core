@@ -9,6 +9,8 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-11-15
+
 ### Added
 
 - `RuleSet::from_json_sources` loads rules from their JSON form, the same
