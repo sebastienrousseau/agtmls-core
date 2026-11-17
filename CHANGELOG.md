@@ -9,6 +9,13 @@ the AgtMLS pre-1.0 policy: increments of exactly `0.0.1` on the `0.0.x` line.
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-11-17
+
+**In lockstep with the AgtMLS family.** Every member of the family now
+releases at one version, so agtmls-core moves from 0.0.5 to 0.0.35.
+No code changed beyond the version: the 57 rules of agtmls-spec 0.0.35
+load as data, as 0.0.5 already did.
+
 ## [0.0.5] - 2026-11-15
 
 ### Added
